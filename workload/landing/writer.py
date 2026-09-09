@@ -2,11 +2,11 @@ import gzip
 import hashlib
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
 
 import psycopg
 
 from workload.core.storage import s3_client
+from workload.landing.commits import put_immutable, sha256
 
 DECODER_OPTIONS = (
     "'format-version', '2', "
@@ -74,7 +74,10 @@ class LandingWriter:
         return len(acknowledged)
 
     def land_batch(self, rows):
-        captured_at = datetime.now(timezone.utc)
+        batch_material = "\n".join(
+            f"{lsn}|{xid}|{raw_data}" for lsn, xid, raw_data in rows
+        ).encode()
+        batch_id = hashlib.sha256(batch_material).hexdigest()
         groups = defaultdict(list)
         for lsn, xid, raw_data in rows:
             change = json.loads(raw_data)
@@ -86,7 +89,8 @@ class LandingWriter:
                 {
                     "schema_version": 1,
                     "event_id": event_id,
-                    "ingested_at": captured_at.isoformat(),
+                    # wal2json's transaction timestamp is stable across retries.
+                    "ingested_at": change.get("timestamp"),
                     "source": {
                         "connector": "postgresql-wal2json",
                         "service": "postgres-source",
@@ -98,15 +102,10 @@ class LandingWriter:
                 }
             )
 
-        first_lsn = rows[0][0].replace("/", "-")
-        last_lsn = rows[-1][0].replace("/", "-")
-        date = captured_at.strftime("%Y-%m-%d")
-        hour = captured_at.strftime("%H")
-        for table, events in groups.items():
+        objects = []
+        for table, events in sorted(groups.items()):
             key = (
-                f"{self.settings.landing_prefix}/{table}/"
-                f"ingest_date={date}/hour={hour}/"
-                f"batch-{first_lsn}-{last_lsn}.jsonl.gz"
+                f"{self.settings.landing_prefix}/data/{table}/batch-{batch_id}.jsonl.gz"
             )
             payload = gzip.compress(
                 b"".join(
@@ -116,22 +115,63 @@ class LandingWriter:
                 ),
                 mtime=0,
             )
-            self.s3.put_object(
-                Bucket=self.settings.s3_bucket,
-                Key=key,
-                Body=payload,
+            put_immutable(
+                self.s3,
+                self.settings.s3_bucket,
+                key,
+                payload,
                 ContentType="application/x-ndjson",
                 ContentEncoding="gzip",
                 Metadata={
                     "first-lsn": rows[0][0],
                     "last-lsn": rows[-1][0],
                     "event-count": str(len(events)),
+                    "sha256": sha256(payload),
                 },
+            )
+            objects.append(
+                {
+                    "event_count": len(events),
+                    "key": key,
+                    "sha256": sha256(payload),
+                    "table": table,
+                }
             )
             print(
                 f"Landed {len(events):4d} events to s3://{self.settings.s3_bucket}/{key}"
             )
 
+        commit = {
+            "batch_id": batch_id,
+            "event_count": sum(len(events) for events in groups.values()),
+            "objects": objects,
+            "schema_version": 2,
+            "source": {
+                "database": self.settings.pg_database,
+                "first_lsn": rows[0][0],
+                "first_lsn_int": _lsn_int(rows[0][0]),
+                "last_lsn": rows[-1][0],
+                "last_lsn_int": _lsn_int(rows[-1][0]),
+            },
+        }
+        commit_payload = json.dumps(
+            commit, separators=(",", ":"), sort_keys=True
+        ).encode()
+        commit_key = f"{self.settings.landing_prefix}/commits/{batch_id}.json"
+        put_immutable(
+            self.s3,
+            self.settings.s3_bucket,
+            commit_key,
+            commit_payload,
+            ContentType="application/json",
+            Metadata={"event-count": str(commit["event_count"])},
+        )
+
         acknowledged = self.acknowledge(rows)
         print(f"Acknowledged {acknowledged} WAL changes through LSN {rows[-1][0]}.")
         return sum(len(events) for events in groups.values())
+
+
+def _lsn_int(value):
+    high, low = value.split("/", 1)
+    return (int(high, 16) << 32) + int(low, 16)

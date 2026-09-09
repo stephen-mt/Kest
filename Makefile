@@ -1,4 +1,4 @@
-.PHONY: start stop restart logs env lint workload-image workload-setup history cdc generate cdc-drain cdc-test batch batch-check batch-airflow airflow-dag-check workload-check workload-check-history workload-check-cdc
+.PHONY: start stop restart logs env lint test workload-image workload-setup history history-reset cdc generate cdc-drain cdc-test batch batch-check batch-airflow airflow-dag-check workload-check workload-check-history workload-check-history-deep workload-check-cdc
 
 WORKLOAD_COMPOSE := docker compose -f docker-compose.yml -f compose.workload.yml
 RUFF := UV_CACHE_DIR=.uv-cache UV_TOOL_DIR=.uv-cache/tools uvx --from ruff==0.16.6 ruff
@@ -27,8 +27,11 @@ env:
 	uv pip sync requirements.txt --python .venv/bin/python
 
 lint:
-	$(RUFF) format --check workload docker/lakekeeper/bootstrap.py docker/airflow/dags
-	$(RUFF) check workload docker/lakekeeper/bootstrap.py docker/airflow/dags
+	$(RUFF) format --check workload tests docker/lakekeeper/bootstrap.py docker/airflow/dags
+	$(RUFF) check workload tests docker/lakekeeper/bootstrap.py docker/airflow/dags
+
+test: workload-image
+	$(WORKLOAD_COMPOSE) run --rm workload python -m unittest discover -s tests
 
 workload-image:
 	$(WORKLOAD_COMPOSE) --profile workload build workload
@@ -38,6 +41,9 @@ workload-setup: workload-image
 
 history: workload-image
 	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.pipelines.history
+
+history-reset: workload-image
+	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.pipelines.history --reset
 
 cdc: workload-image
 	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.pipelines.cdc
@@ -69,6 +75,9 @@ workload-check: workload-image
 
 workload-check-history: workload-image
 	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.validation.state --phase history
+
+workload-check-history-deep: workload-image
+	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.validation.deep_history
 
 workload-check-cdc: workload-image
 	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.validation.state --phase cdc

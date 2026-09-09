@@ -29,6 +29,7 @@ class Settings:
     landing_prefix: str
     bronze_prefix: str
     bronze_target_bytes: int
+    iceberg_prefix: str
     iceberg_catalog: str
     silver_namespace: str
     gold_namespace: str
@@ -57,10 +58,11 @@ class Settings:
             ).strip("/"),
             bronze_prefix=os.getenv("BRONZE_PREFIX", "bronze/history").strip("/"),
             bronze_target_bytes=int(os.getenv("BRONZE_TARGET_BYTES", str(5 * 1024**3))),
+            iceberg_prefix=os.getenv("ICEBERG_PREFIX", "iceberg").strip("/"),
             iceberg_catalog=os.getenv("ICEBERG_CATALOG", "kest"),
             silver_namespace=os.getenv("SILVER_NAMESPACE", "silver"),
             gold_namespace=os.getenv("GOLD_NAMESPACE", "gold"),
-            batch_duckdb_memory=os.getenv("BATCH_DUCKDB_MEMORY", "512MB"),
+            batch_duckdb_memory=os.getenv("BATCH_DUCKDB_MEMORY", "1GB"),
         )
 
     def pg_kwargs(self):

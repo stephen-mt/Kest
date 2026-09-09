@@ -52,7 +52,8 @@ def ensure_bucket():
         "-ec",
         "mc alias set kest-local http://127.0.0.1:9000 "
         '"$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null; '
-        'mc mb --ignore-existing "kest-local/$MINIO_BUCKET" >/dev/null',
+        'mc mb --ignore-existing "kest-local/$MINIO_BUCKET" >/dev/null; '
+        'mc version enable "kest-local/$MINIO_BUCKET" >/dev/null',
     )
 
 

@@ -6,6 +6,8 @@ services:
       dockerfile: docker/workload/Dockerfile
     profiles: [workload]
     networks: [kest-net]
+    mem_limit: 1536m
+    cpus: 2.0
     working_dir: /opt/kest
     environment:
       PGHOST: postgres-source
@@ -26,10 +28,11 @@ services:
       CDC_LANDING_PREFIX: ${CDC_LANDING_PREFIX:-landing/postgres-source}
       BRONZE_PREFIX: ${BRONZE_PREFIX:-bronze/history}
       BRONZE_TARGET_BYTES: ${BRONZE_TARGET_BYTES:-5368709120}
+      ICEBERG_PREFIX: ${ICEBERG_PREFIX:-iceberg}
       ICEBERG_CATALOG: kest
       SILVER_NAMESPACE: ${SILVER_NAMESPACE:-silver}
       GOLD_NAMESPACE: ${GOLD_NAMESPACE:-gold}
-      BATCH_DUCKDB_MEMORY: ${BATCH_DUCKDB_MEMORY:-512MB}
+      BATCH_DUCKDB_MEMORY: ${BATCH_DUCKDB_MEMORY:-1GB}
       PYICEBERG_CATALOG__KEST__TYPE: rest
       PYICEBERG_CATALOG__KEST__URI: http://lakekeeper:8181/catalog
       PYICEBERG_CATALOG__KEST__WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
@@ -40,6 +43,7 @@ services:
       PYICEBERG_CATALOG__KEST__S3__REGION: us-east-1
     volumes:
       - ./workload:/opt/kest/workload:ro,Z
+      - ./tests:/opt/kest/tests:ro,Z
     depends_on:
       postgres-source:
         condition: service_healthy

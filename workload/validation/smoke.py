@@ -1,15 +1,19 @@
-import gzip
 import json
 from collections import Counter
 
 import psycopg
 
 from workload.core.config import Settings
-from workload.core.storage import list_objects, s3_client
 from workload.cybermarket.schema import TABLES
+from workload.landing.commits import load_commits, load_committed_events
 from workload.landing.writer import LandingWriter
 from workload.pipelines.cdc import run as run_cdc
 from workload.pipelines.generator import run as run_generator
+
+
+def lsn_int(value):
+    high, low = value.split("/", 1)
+    return (int(high, 16) << 32) + int(low, 16)
 
 
 def row_counts(connection):
@@ -41,17 +45,14 @@ def live_id_counts(connection):
 
 def main():
     settings = Settings.from_env()
-    client = s3_client(settings)
-    prefix = settings.landing_prefix + "/"
-    before_keys = {
-        item["Key"] for item in list_objects(client, settings.s3_bucket, prefix)
-    }
 
     writer = LandingWriter(settings)
     try:
         writer.ensure_slot()
     finally:
         writer.close()
+    run_cdc(follow=False)
+    before_commits = {commit["batch_id"] for commit in load_commits(settings)}
 
     with psycopg.connect(**settings.pg_kwargs()) as connection:
         before_rows = row_counts(connection)
@@ -71,8 +72,8 @@ def main():
         raise AssertionError(f"Unexpected one-second event mix: {counts}")
 
     landed = run_cdc(follow=False)
-    if landed != 56:
-        raise AssertionError(f"Expected 56 row changes, landed {landed}")
+    if not 58 <= landed <= 62:
+        raise AssertionError(f"Expected 58-62 causal row changes, landed {landed}")
 
     with psycopg.connect(**settings.pg_kwargs()) as connection:
         after_rows = row_counts(connection)
@@ -114,24 +115,27 @@ def main():
                 f"{table}: expected +{delta} canonical live IDs, got {actual}"
             )
 
-    new_objects = [
-        item
-        for item in list_objects(client, settings.s3_bucket, prefix)
-        if item["Key"] not in before_keys
+    all_events, commits = load_committed_events(settings)
+    new_commits = [
+        commit for commit in commits if commit["batch_id"] not in before_commits
     ]
-    if not new_objects:
-        raise AssertionError("CDC produced no new landing objects")
-    raw_events = []
-    for item in new_objects:
-        body = client.get_object(Bucket=settings.s3_bucket, Key=item["Key"])[
-            "Body"
-        ].read()
-        raw_events.extend(
-            json.loads(line) for line in gzip.decompress(body).splitlines()
+    if not new_commits:
+        raise AssertionError("CDC produced no completion manifest")
+    new_event_ids = {
+        event["event_id"]
+        for event in all_events
+        if any(
+            event["source"]["lsn"] == commit["source"]["first_lsn"]
+            or commit["source"]["first_lsn_int"]
+            <= lsn_int(event["source"]["lsn"])
+            <= commit["source"]["last_lsn_int"]
+            for commit in new_commits
         )
-    if len(raw_events) != 56:
-        raise AssertionError(f"Expected 56 raw events, read {len(raw_events)}")
-    if len({event["event_id"] for event in raw_events}) != 56:
+    }
+    raw_events = [event for event in all_events if event["event_id"] in new_event_ids]
+    if len(raw_events) != landed:
+        raise AssertionError(f"Expected {landed} raw events, read {len(raw_events)}")
+    if len({event["event_id"] for event in raw_events}) != landed:
         raise AssertionError("Raw CDC event IDs are not unique")
     if any(event["change"].get("table") not in TABLES for event in raw_events):
         raise AssertionError("Landing contains a change outside the selected 10 tables")
@@ -140,7 +144,7 @@ def main():
         json.dumps(
             {
                 "business_events": sum(counts.values()),
-                "landing_objects": len(new_objects),
+                "landing_commits": len(new_commits),
                 "raw_changes": len(raw_events),
                 "slot_active": False,
             },

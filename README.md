@@ -1,8 +1,9 @@
 # Kest local environment
 
-Minimal local infrastructure: three isolated PostgreSQL instances, MinIO,
-Lakekeeper, RisingWave and Airflow. No application workloads, DAGs, CDC pipelines
-or sample data are installed.
+Local data-platform environment with three isolated PostgreSQL instances, MinIO,
+Lakekeeper, RisingWave, Airflow and the optional CyberMarket workload. The
+workload includes reproducible Bronze history, committed raw CDC and a finite
+Silver/Gold Iceberg batch.
 
 ## Layout
 
@@ -12,8 +13,10 @@ docker-compose.yml              Services, network, volumes and resource limits
 Makefile                        Start, stop, restart and logs
 docker/
   airflow/start.sh              Local UI credentials and standalone startup
+  airflow/dags/                 Manually triggered finite batch DAG
   lakekeeper/bootstrap.py      Idempotent empty bucket/warehouse bootstrap
   risingwave/risingwave.toml    Small single-node storage/cache settings
+workload/                       CyberMarket generators, ingestion and transforms
 ```
 
 ## Start
@@ -67,7 +70,7 @@ docker compose ps
 The five named volumes preserve PostgreSQL, MinIO and RisingWave state. Airflow
 metadata lives in `postgres-airflow-data`; UI credentials are restored from `.env`.
 RisingWave's `[system]` storage sizes are set when its volume is first initialized.
-Container memory limits total 4.75 GiB; actual idle use is lower.
+Container memory limits total 5.75 GiB; actual idle use is lower.
 
 ## CyberMarket workload
 
@@ -76,8 +79,11 @@ CDC remain stopped unless explicitly invoked. Its environment is locked in
 `requirements.txt`; `make env` creates the same local Python environment for
 DuckDB, PyIceberg, Parquet/S3 and PostgreSQL development.
 
-CyberMarket's manual Airflow DAG runs a finite DuckDB batch that publishes
-Iceberg `silver` and `gold` namespaces through Lakekeeper. RisingWave remains
-idle until a later streaming phase has a concrete need for it.
+CyberMarket's manual Airflow DAG runs a finite DuckDB batch. Each run writes
+immutable versioned Silver/Gold namespaces through Lakekeeper, then atomically
+updates `iceberg/_kest_batches/current.json`. Consumers resolve namespaces from
+that pointer. RisingWave remains idle until a streaming phase needs it.
 
-See [workload/README.md](workload/README.md) for the object layout and commands.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current end-to-end
+architecture and business rules, and [workload/README.md](workload/README.md) for
+the concise object layout and commands.

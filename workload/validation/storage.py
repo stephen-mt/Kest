@@ -1,4 +1,3 @@
-import gzip
 import io
 import json
 import re
@@ -10,7 +9,6 @@ from workload.core.storage import list_objects, s3_client
 from workload.cybermarket.ids import (
     BUYER_COUNT,
     BUYER_PATTERN,
-    HISTORY_REFERENCE_COUNT,
     MARKET_COUNT,
     MARKET_PATTERN,
     PRODUCT_COUNT,
@@ -23,6 +21,8 @@ from workload.cybermarket.ids import (
     vendor_id,
 )
 from workload.cybermarket.schema import EXPECTED_COLUMNS, TABLES
+from workload.landing.commits import load_committed_events
+from workload.pipelines.history import HISTORY_SCHEMA_VERSION
 
 HISTORY_STARTED_AT = datetime(2024, 1, 1)
 SAMPLE_SIZE = 256
@@ -33,6 +33,11 @@ def _history_index(value, prefix):
     if not match:
         raise AssertionError(f"Invalid historical identifier: {value}")
     return int(match.group(1))
+
+
+def _risk_label(probability):
+    value = round(float(probability), 3)
+    return "high" if value >= 0.7 else "medium" if value >= 0.3 else "low"
 
 
 def _read_parquet(client, settings, item, full_row_group=False):
@@ -134,9 +139,10 @@ def _check_fact_samples(samples, manifest):
         expected_vendor = vendor_id(vendor_index)
         if row["SellerPointer"] != expected_vendor:
             raise AssertionError("Historical item and transaction vendors differ")
+        pair_start = 1 + ((event_index - 1) // VENDOR_COUNT % 2) * 2
         expected_products = {
             product_key((vendor_index - 1) * PRODUCTS_PER_VENDOR + line)
-            for line in (1, 2)
+            for line in (pair_start, pair_start + 1)
         }
         if key not in expected_products:
             raise AssertionError(
@@ -144,7 +150,9 @@ def _check_fact_samples(samples, manifest):
             )
         items_by_event.setdefault(row["EventLink"], set()).add(key)
         expected_amount = 5 + event_index % 250000 / 100.0
-        first_product = product_key((vendor_index - 1) * PRODUCTS_PER_VENDOR + 1)
+        first_product = product_key(
+            (vendor_index - 1) * PRODUCTS_PER_VENDOR + pair_start
+        )
         expected_price = expected_amount * (0.45 if key == first_product else 0.55)
         if row["QtySold"] != 1 or abs(row["PriceAmt"] - expected_price) > 0.01:
             raise AssertionError("Historical item amount contradicts its transaction")
@@ -152,9 +160,10 @@ def _check_fact_samples(samples, manifest):
     for event, keys in items_by_event.items():
         event_index = _history_index(event, "EVT")
         vendor_index = 1 + (event_index - 1) % VENDOR_COUNT
+        pair_start = 1 + ((event_index - 1) // VENDOR_COUNT % 2) * 2
         expected = {
             product_key((vendor_index - 1) * PRODUCTS_PER_VENDOR + line)
-            for line in (1, 2)
+            for line in (pair_start, pair_start + 1)
         }
         if keys != expected:
             raise AssertionError("Historical transaction does not contain two products")
@@ -163,6 +172,18 @@ def _check_fact_samples(samples, manifest):
         _history_index(row["BSA_id"], "BSA")
         if row["acq_ref"] not in buyer_ids:
             raise AssertionError("Historical session references an unknown buyer")
+        if row["cart_removals_count"] > row["cart_additions_count"]:
+            raise AssertionError("Historical session removes more items than it added")
+        if row["checkout_completed"] and not row["checkout_initiated"]:
+            raise AssertionError("Historical checkout completed before initiation")
+        if row["bounce_indicator"] and (
+            row["checkout_initiated"]
+            or row["checkout_completed"]
+            or row["cart_additions_count"]
+        ):
+            raise AssertionError(
+                "Historical bounced session contains checkout activity"
+            )
 
     for row in samples["PaymentProcessingEvents"]:
         _history_index(row["PPE_id"], "PPE")
@@ -174,6 +195,20 @@ def _check_fact_samples(samples, manifest):
         )
         if row["event_timestamp"] < transaction_time:
             raise AssertionError("Historical payment predates its transaction")
+        if row["processing_stage"] == "failed":
+            if (
+                row["amount_processed"] != 0
+                or not row["decline_reason"]
+                or row["retry_count"] < 1
+            ):
+                raise AssertionError("Historical failed payment state is inconsistent")
+        elif (
+            row["processing_stage"] != "settled"
+            or abs(row["amount_processed"] - row["amount_requested"]) > 0.01
+            or row["decline_reason"] is not None
+            or row["retry_count"] != 0
+        ):
+            raise AssertionError("Historical settled payment state is inconsistent")
 
     for row in samples["risk_analytics"]:
         transaction_index = _history_index(row["TxnLink"], "EVT")
@@ -181,6 +216,8 @@ def _check_fact_samples(samples, manifest):
             raise AssertionError(
                 "Historical risk row references an unknown transaction"
             )
+        if row["ML_Risk"] != _risk_label(row["FraudProb"]):
+            raise AssertionError("Historical risk label differs from probability")
 
     for row in samples["RiskModelPredictions"]:
         _history_index(row["RMP_id"], "RMP")
@@ -192,6 +229,9 @@ def _check_fact_samples(samples, manifest):
         )
         if row["prediction_timestamp"] < transaction_time:
             raise AssertionError("Historical prediction predates its transaction")
+        expected = _risk_label(row["fraud_probability"])
+        if row["risk_category_predicted"] != expected:
+            raise AssertionError("Historical prediction label differs from probability")
 
 
 def check_history(settings):
@@ -228,8 +268,48 @@ def check_history(settings):
     manifest = json.loads(
         client.get_object(Bucket=settings.s3_bucket, Key=manifest_key)["Body"].read()
     )
+    if manifest.get("schema_version") != HISTORY_SCHEMA_VERSION:
+        raise AssertionError("Bronze history uses an obsolete generator schema")
     if manifest["total_parquet_bytes"] != total:
         raise AssertionError("Bronze manifest byte count differs from stored Parquet")
+    objects_by_key = {item["Key"]: item for item in parquet_objects}
+    manifest_files = {
+        entry["key"]: (table, entry)
+        for table, entries in manifest.get("files", {}).items()
+        for entry in entries
+    }
+    if set(manifest_files) != set(objects_by_key):
+        raise AssertionError("Bronze manifest file inventory differs from MinIO")
+    for key, (table, entry) in manifest_files.items():
+        item = objects_by_key[key]
+        if item["Size"] != entry["size"]:
+            raise AssertionError(f"Bronze object size differs: {key}")
+        head = client.head_object(Bucket=settings.s3_bucket, Key=key)
+        metadata = head["Metadata"]
+        if head["ETag"].strip('"') != entry["etag"]:
+            raise AssertionError(f"Bronze object ETag differs: {key}")
+        if metadata.get("content-sha256") != entry["sha256"]:
+            raise AssertionError(f"Bronze object checksum metadata differs: {key}")
+        if metadata.get("schema-sha256") != entry["schema_sha256"]:
+            raise AssertionError(f"Bronze object schema fingerprint differs: {key}")
+        if int(metadata.get("part-number", -1)) != entry["part_number"]:
+            raise AssertionError(f"Bronze object part metadata differs: {key}")
+        if int(metadata.get("row-start", -1)) != entry["row_start"]:
+            raise AssertionError(f"Bronze object row start differs: {key}")
+        if int(metadata.get("row-count", -1)) != entry["row_count"]:
+            raise AssertionError(f"Bronze object row count differs: {key}")
+        if not key.startswith(f"{settings.bronze_prefix}/{table}/"):
+            raise AssertionError(f"Bronze manifest table path differs: {key}")
+    for table, entries in manifest["files"].items():
+        expected_start = 1
+        for part_number, entry in enumerate(entries):
+            if entry["part_number"] != part_number:
+                raise AssertionError(f"Bronze {table} part sequence differs")
+            if entry["row_start"] != expected_start:
+                raise AssertionError(f"Bronze {table} contains an overlap or gap")
+            expected_start += entry["row_count"]
+        if expected_start - 1 != manifest["rows"][table]:
+            raise AssertionError(f"Bronze {table} file rows differ from manifest")
     rows = manifest["rows"]
     if set(rows) != TABLES:
         raise AssertionError(f"Bronze manifest tables differ: {sorted(rows)}")
@@ -248,12 +328,19 @@ def check_history(settings):
         raise AssertionError(
             "Bronze history must contain exactly two items per transaction"
         )
-    if rows["transactions"] < HISTORY_REFERENCE_COUNT:
-        raise AssertionError("Historical transaction reference domain is incomplete")
-    if rows["risk_analytics"] < HISTORY_REFERENCE_COUNT:
-        raise AssertionError("Historical risk reference domain is incomplete")
-    if rows["risk_analytics"] > rows["transactions"]:
-        raise AssertionError("Historical risk rows exceed the transaction domain")
+    transactions = rows["transactions"]
+    expected_ratios = {
+        "transaction_products": 2 * transactions,
+        "BuyerSessionAnalytics": (4 * transactions + 2) // 3,
+        "PaymentProcessingEvents": transactions,
+        "risk_analytics": transactions,
+        "RiskModelPredictions": (transactions + 2) // 3,
+    }
+    for table, expected in expected_ratios.items():
+        if rows[table] != expected:
+            raise AssertionError(
+                f"Historical {table} has {rows[table]} rows; expected {expected}"
+            )
 
     _check_dimension_samples(samples)
     _check_fact_samples(samples, manifest)
@@ -262,27 +349,30 @@ def check_history(settings):
 
 def check_cdc(settings):
     client = s3_client(settings)
-    prefix = settings.landing_prefix + "/"
+    versioning = client.get_bucket_versioning(Bucket=settings.s3_bucket)
+    if versioning.get("Status") != "Enabled":
+        raise AssertionError("CDC landing bucket versioning is not enabled")
+    events, commits = load_committed_events(settings)
+    if not commits:
+        raise AssertionError("CDC phase requires a completion manifest")
+    if sum(commit["event_count"] for commit in commits) != len(events):
+        raise AssertionError("Raw landing contains duplicate event IDs")
+
+    prefix = f"{settings.landing_prefix}/data/"
     objects = [
         item
         for item in list_objects(client, settings.s3_bucket, prefix)
         if item["Key"].endswith(".jsonl.gz")
     ]
-    if not objects:
-        raise AssertionError("CDC phase requires raw landing objects")
+    committed_keys = {item["key"] for commit in commits for item in commit["objects"]}
+    if {item["Key"] for item in objects} != committed_keys:
+        raise AssertionError("CDC data objects and completion manifests differ")
 
-    for item in objects:
-        relative = item["Key"][len(prefix) :]
-        table = relative.split("/", 1)[0]
+    event_ids = set()
+    for event in events:
+        table = event["change"].get("table")
         if table not in TABLES:
             raise AssertionError(f"Unexpected landing table: {table}")
-        body = client.get_object(Bucket=settings.s3_bucket, Key=item["Key"])[
-            "Body"
-        ].read()
-        lines = gzip.decompress(body).splitlines()
-        if not lines:
-            raise AssertionError(f"Empty raw landing object: {item['Key']}")
-        event = json.loads(lines[0])
         if set(event) != {
             "schema_version",
             "event_id",
@@ -293,9 +383,23 @@ def check_cdc(settings):
             raise AssertionError(f"Unexpected raw envelope: {event.keys()}")
         if not re.fullmatch(r"[0-9a-f]{64}", event["event_id"]):
             raise AssertionError("Raw event_id is not a stable SHA-256 identifier")
-        if event["change"].get("table") != table:
-            raise AssertionError("Raw landing path and change table differ")
+        if event["event_id"] in event_ids:
+            raise AssertionError("Raw landing contains a duplicate event ID")
+        event_ids.add(event["event_id"])
+        if event["ingested_at"] != event["change"].get("timestamp"):
+            raise AssertionError("Raw ingestion timestamp is not retry-stable")
         source = event["source"]
         if not source.get("lsn") or not source.get("xid"):
             raise AssertionError("Raw source metadata is missing LSN or XID")
-    return len(objects)
+    previous_last = -1
+    for commit in commits:
+        first = commit["source"]["first_lsn_int"]
+        last = commit["source"]["last_lsn_int"]
+        if first < previous_last or last < first:
+            raise AssertionError("CDC completion manifests overlap or are unordered")
+        previous_last = last
+    return {
+        "cdc_commits": len(commits),
+        "landing_events": len(events),
+        "landing_objects": len(objects),
+    }

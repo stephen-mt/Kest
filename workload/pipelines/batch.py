@@ -30,26 +30,30 @@ from workload.lakehouse.catalog import (
     remove_namespace,
     table_key,
 )
+from workload.lakehouse.cdc import CDC_TABLE, committed_event_table
+from workload.lakehouse.publication import (
+    load_current_pointer,
+    publish_pointer,
+    write_batch_manifest,
+)
 
 GOLD_QUERIES = {
     "daily_market_metrics": """
-        WITH payment AS (
-            SELECT transaction_ref,
-                   count(*) FILTER (WHERE processing_stage IN ('declined', 'failed'))::BIGINT AS failed_events
-            FROM silver_payments GROUP BY transaction_ref
-        )
         SELECT CAST(txn."EventTimestamp" AS DATE) AS metric_date,
                txn."PlatformKey" AS platform_key,
                count(*)::BIGINT AS transaction_count,
                count(DISTINCT txn."AcqLink")::BIGINT AS unique_buyers,
                count(DISTINCT txn."VendorLink")::BIGINT AS unique_vendors,
-               sum(try_cast(json_extract_string(txn.transaction_financials, '$.amount') AS DOUBLE))::DOUBLE AS gross_merchandise_value,
+               sum(try_cast(json_extract_string(txn.transaction_financials, '$.amount') AS DECIMAL(18,2))) AS gross_merchandise_value,
                sum(txn."CrossBorder")::BIGINT AS cross_border_transactions,
                count(*) FILTER (WHERE risk."ML_Risk" = 'high')::BIGINT AS high_risk_transactions,
-               coalesce(sum(payment.failed_events), 0)::BIGINT AS payment_failed_events
+               count(*) FILTER (
+                   WHERE payment.processing_stage IN ('declined', 'failed')
+               )::BIGINT AS payment_failed_events
         FROM silver_transactions txn
         LEFT JOIN silver_risk risk ON risk."TxnLink" = txn."EventCode"
-        LEFT JOIN payment ON payment.transaction_ref = txn."EventCode"
+        LEFT JOIN silver_payments payment
+          ON payment.transaction_ref = txn."EventCode"
         GROUP BY metric_date, platform_key
         ORDER BY metric_date, platform_key
     """,
@@ -57,10 +61,10 @@ GOLD_QUERIES = {
         SELECT vendor."SellerKey" AS seller_key,
                count(txn."EventCode")::BIGINT AS transaction_count,
                count(DISTINCT txn."AcqLink")::BIGINT AS unique_buyers,
-               coalesce(sum(try_cast(json_extract_string(txn.transaction_financials, '$.amount') AS DOUBLE)), 0)::DOUBLE AS gross_merchandise_value,
+               coalesce(sum(try_cast(json_extract_string(txn.transaction_financials, '$.amount') AS DECIMAL(18,2))), 0)::DECIMAL(38,2) AS gross_merchandise_value,
                count(*) FILTER (WHERE risk."ML_Risk" = 'high')::BIGINT AS high_risk_transactions,
                avg(risk."FraudProb")::DOUBLE AS average_fraud_probability,
-               max(txn."EventTimestamp") AS last_transaction_at
+               CAST(max(txn."EventTimestamp") AS TIMESTAMP WITH TIME ZONE) AS last_transaction_at
         FROM silver_vendors vendor
         LEFT JOIN silver_transactions txn ON txn."VendorLink" = vendor."SellerKey"
         LEFT JOIN silver_risk risk ON risk."TxnLink" = txn."EventCode"
@@ -71,8 +75,8 @@ GOLD_QUERIES = {
         WITH purchase AS (
             SELECT "AcqLink" AS buyer_key,
                    count(*)::BIGINT AS transaction_count,
-                   sum(try_cast(json_extract_string(transaction_financials, '$.amount') AS DOUBLE))::DOUBLE AS lifetime_value,
-                   max("EventTimestamp") AS last_purchase_at
+                   sum(try_cast(json_extract_string(transaction_financials, '$.amount') AS DECIMAL(18,2))) AS lifetime_value,
+                   CAST(max("EventTimestamp") AS TIMESTAMP WITH TIME ZONE) AS last_purchase_at
             FROM silver_transactions GROUP BY buyer_key
         ), session AS (
             SELECT acq_ref AS buyer_key,
@@ -85,7 +89,7 @@ GOLD_QUERIES = {
                coalesce(purchase.transaction_count, 0)::BIGINT AS transaction_count,
                coalesce(session.session_count, 0)::BIGINT AS session_count,
                coalesce(session.completed_checkouts, 0)::BIGINT AS completed_checkouts,
-               coalesce(purchase.lifetime_value, 0)::DOUBLE AS lifetime_value,
+               coalesce(purchase.lifetime_value, 0)::DECIMAL(38,2) AS lifetime_value,
                session.average_session_seconds,
                purchase.last_purchase_at,
                buyer."AuthLevel" AS auth_level,
@@ -102,7 +106,7 @@ GOLD_QUERIES = {
                product."SellerPointer" AS seller_key,
                count(item."EventLink")::BIGINT AS transaction_count,
                coalesce(sum(item."QtySold"), 0)::BIGINT AS units_sold,
-               coalesce(sum(item."PriceAmt" * item."QtySold"), 0)::DOUBLE AS gross_revenue,
+               coalesce(sum(CAST(item."PriceAmt" AS DECIMAL(18,2)) * item."QtySold"), 0)::DECIMAL(38,2) AS gross_revenue,
                product.product_availability
         FROM silver_products product
         LEFT JOIN silver_transaction_products item
@@ -138,13 +142,10 @@ def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _postgres_snapshot(settings, table, schema):
+def _postgres_snapshot(connection, table, schema):
     columns = EXPECTED_COLUMNS[table]
     selection = ", ".join(_quoted(column) for column in columns)
-    with (
-        psycopg.connect(**settings.pg_kwargs()) as connection,
-        connection.cursor() as cursor,
-    ):
+    with connection.cursor() as cursor:
         cursor.execute(f"SELECT {selection} FROM {_quoted(table)}")
         rows = cursor.fetchall()
 
@@ -158,6 +159,23 @@ def _postgres_snapshot(settings, table, schema):
             )
         records.append(record)
     return pa.Table.from_pylist(records, schema=schema)
+
+
+def _source_snapshot(settings, schemas):
+    with psycopg.connect(**settings.pg_kwargs()) as connection:
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_current_wal_lsn()::text, transaction_timestamp()")
+            source_lsn, captured_at = cursor.fetchone()
+        tables = {
+            table: _postgres_snapshot(connection, table, schema)
+            for table, schema in schemas.items()
+        }
+    return tables, {
+        "captured_at": captured_at.isoformat(),
+        "lsn": source_lsn,
+        "rows": {table: data.num_rows for table, data in tables.items()},
+    }
 
 
 def _rewrite_json(connection, source, output, column):
@@ -225,13 +243,23 @@ def _stage_current_file(client, settings, iceberg_table, table, data, temp_dir):
     return f"s3://{settings.s3_bucket}/{key}"
 
 
-def _build_silver(settings, batch_id, namespace, manifest, manifest_sha):
+def _build_silver(
+    settings,
+    batch_id,
+    namespace,
+    manifest,
+    manifest_sha,
+    history,
+    schemas,
+    source_tables,
+    source_metadata,
+    cdc_data,
+    cdc_checkpoint,
+    cdc_commit_count,
+):
     iceberg_catalog = catalog(settings)
     ensure_namespace(iceberg_catalog, namespace)
     client = s3_client(settings)
-    history = bronze_files(settings)
-    if set(history) != TABLES:
-        raise RuntimeError(f"Bronze tables differ: {sorted(history)}")
 
     connection = duckdb.connect()
     connection.execute("SET threads = 2")
@@ -244,10 +272,7 @@ def _build_silver(settings, batch_id, namespace, manifest, manifest_sha):
     try:
         with tempfile.TemporaryDirectory(prefix="kest-batch-") as temp_dir:
             for table in EXPECTED_COLUMNS:
-                source_schema = parquet_schema(
-                    client, settings.s3_bucket, history[table][0]
-                )
-                schema = iceberg_arrow_schema(source_schema)
+                schema = schemas[table]
                 identifier = (namespace, table)
                 iceberg_table = iceberg_catalog.create_table(
                     identifier,
@@ -256,6 +281,8 @@ def _build_silver(settings, batch_id, namespace, manifest, manifest_sha):
                         "kest.layer": "silver",
                         "kest.batch-id": batch_id,
                         "kest.bronze-manifest-sha256": manifest_sha,
+                        "kest.source-captured-at": source_metadata["captured_at"],
+                        "kest.source-lsn": source_metadata["lsn"],
                         "write.parquet.compression-codec": "zstd",
                         "write.target-file-size-bytes": str(128 * 1024**2),
                     },
@@ -271,7 +298,7 @@ def _build_silver(settings, batch_id, namespace, manifest, manifest_sha):
                         history[table],
                         temp_dir,
                     )
-                current = _postgres_snapshot(settings, table, schema)
+                current = source_tables[table]
                 if table in FACT_TABLES:
                     if current.num_rows:
                         history_uris.append(
@@ -310,6 +337,24 @@ def _build_silver(settings, batch_id, namespace, manifest, manifest_sha):
                     task.file.file_path for task in iceberg_table.scan().plan_files()
                 ]
                 print(f"Silver {table}: {actual:,} rows")
+
+            cdc_table = iceberg_catalog.create_table(
+                (namespace, CDC_TABLE),
+                schema=cdc_data.schema,
+                properties={
+                    "kest.layer": "silver",
+                    "kest.batch-id": batch_id,
+                    "kest.cdc-through-lsn": cdc_checkpoint or "",
+                    "kest.cdc-commit-count": str(cdc_commit_count),
+                    "write.parquet.compression-codec": "zstd",
+                },
+            )
+            if cdc_data.num_rows:
+                cdc_table.append(
+                    cdc_data, snapshot_properties={"kest.source": "committed-raw-cdc"}
+                )
+            row_counts[CDC_TABLE] = record_count(cdc_table)
+            print(f"Silver {CDC_TABLE}: {cdc_data.num_rows:,} rows")
     finally:
         connection.close()
     return row_counts, data_files
@@ -319,12 +364,13 @@ def _build_gold(settings, batch_id, gold_namespace, silver_files):
     iceberg_catalog = catalog(settings)
     ensure_namespace(iceberg_catalog, gold_namespace)
     connection = duckdb.connect()
-    connection.execute("SET threads = 2")
+    connection.execute("SET threads = 1")
     connection.execute(
         f"SET memory_limit = {_sql_literal(settings.batch_duckdb_memory)}"
     )
     connection.execute("SET preserve_insertion_order = false")
     connection.execute("SET temp_directory = '/tmp/kest-duckdb-spill'")
+    connection.execute("SET TimeZone = 'UTC'")
     filesystem = s3fs.S3FileSystem(
         key=settings.aws_access_key_id,
         secret=settings.aws_secret_access_key,
@@ -349,6 +395,7 @@ def _build_gold(settings, batch_id, gold_namespace, silver_files):
                 properties={
                     "kest.layer": "gold",
                     "kest.batch-id": batch_id,
+                    "kest.silver-namespace": silver_files["_namespace"],
                     "write.parquet.compression-codec": "zstd",
                 },
             )
@@ -365,57 +412,81 @@ def _build_gold(settings, batch_id, gold_namespace, silver_files):
     return row_counts
 
 
-def _publish_layer(iceberg_catalog, staging_namespace, final_namespace, tables):
-    ensure_namespace(iceberg_catalog, final_namespace)
-    existing = set(iceberg_catalog.list_tables((final_namespace,)))
-    for table in tables:
-        final = (final_namespace, table)
-        if final in existing:
-            iceberg_catalog.purge_table(final)
-        iceberg_catalog.rename_table((staging_namespace, table), final)
-    iceberg_catalog.drop_namespace((staging_namespace,))
-
-
 def run():
     settings = Settings.from_env()
     manifest, manifest_sha = load_manifest(settings)
+    history = bronze_files(settings)
+    if set(history) != TABLES:
+        raise RuntimeError(f"Bronze tables differ: {sorted(history)}")
+    schemas = {
+        table: iceberg_arrow_schema(
+            parquet_schema(s3_client(settings), settings.s3_bucket, items[0])
+        )
+        for table, items in history.items()
+    }
+    source_tables, source_metadata = _source_snapshot(settings, schemas)
+    cdc_data, cdc_checkpoint, cdc_commit_count = committed_event_table(settings)
+    _, expected_pointer_etag = load_current_pointer(settings, required=False)
     batch_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         + "-"
         + uuid.uuid4().hex[:8]
     )
-    silver_stage = f"silver_stage_{batch_id.replace('-', '_').lower()}"
-    gold_stage = f"gold_stage_{batch_id.replace('-', '_').lower()}"
+    version = batch_id.replace("-", "_").lower()
+    silver_version = f"{settings.silver_namespace}_{version}"
+    gold_version = f"{settings.gold_namespace}_{version}"
     iceberg_catalog = catalog(settings)
+    published = False
     try:
         silver_rows, silver_files = _build_silver(
-            settings, batch_id, silver_stage, manifest, manifest_sha
+            settings,
+            batch_id,
+            silver_version,
+            manifest,
+            manifest_sha,
+            history,
+            schemas,
+            source_tables,
+            source_metadata,
+            cdc_data,
+            cdc_checkpoint,
+            cdc_commit_count,
         )
-        gold_rows = _build_gold(settings, batch_id, gold_stage, silver_files)
-        _publish_layer(
-            iceberg_catalog, silver_stage, settings.silver_namespace, EXPECTED_COLUMNS
-        )
-        _publish_layer(
-            iceberg_catalog, gold_stage, settings.gold_namespace, GOLD_QUERIES
-        )
+        silver_files["_namespace"] = silver_version
+        gold_rows = _build_gold(settings, batch_id, gold_version, silver_files)
+
+        result = {
+            "batch_id": batch_id,
+            "bronze_manifest_sha256": manifest_sha,
+            "cdc": {
+                "commit_count": cdc_commit_count,
+                "event_count": cdc_data.num_rows,
+                "through_lsn": cdc_checkpoint,
+            },
+            "gold_namespace": gold_version,
+            "gold_rows": gold_rows,
+            "schema_version": 2,
+            "silver_namespace": silver_version,
+            "silver_rows": silver_rows,
+            "source_snapshot": source_metadata,
+        }
+        manifest_key = write_batch_manifest(settings, batch_id, result)
+        pointer = {
+            "batch_id": batch_id,
+            "gold_namespace": gold_version,
+            "manifest_key": manifest_key,
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "schema_version": 1,
+            "silver_namespace": silver_version,
+        }
+        publish_pointer(settings, pointer, expected_pointer_etag)
+        published = True
     except Exception:
-        remove_namespace(iceberg_catalog, gold_stage)
-        remove_namespace(iceberg_catalog, silver_stage)
+        if not published:
+            remove_namespace(iceberg_catalog, gold_version)
+            remove_namespace(iceberg_catalog, silver_version)
         raise
 
-    result = {
-        "batch_id": batch_id,
-        "bronze_manifest_sha256": manifest_sha,
-        "gold_rows": gold_rows,
-        "silver_rows": silver_rows,
-    }
-    key = f"iceberg/_kest_batches/{batch_id}.json"
-    s3_client(settings).put_object(
-        Bucket=settings.s3_bucket,
-        Key=key,
-        Body=json.dumps(result, indent=2, sort_keys=True).encode(),
-        ContentType="application/json",
-    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return result
 

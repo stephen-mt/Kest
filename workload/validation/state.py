@@ -29,10 +29,8 @@ def verify(phase):
             parquet_objects=parquet_count,
         )
     if phase == "cdc":
-        result.update(
-            cdc_slot_active=False,
-            landing_objects=check_cdc(settings),
-        )
+        result.update(cdc_slot_active=False)
+        result.update(check_cdc(settings))
     if phase == "batch":
         result.update(check_batch(settings))
 

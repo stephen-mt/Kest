@@ -15,6 +15,7 @@ def main():
     ):
         cursor.execute((SQL_DIR / "schema.sql").read_text())
         cursor.execute((SQL_DIR / "seed.sql").read_text())
+        cursor.execute((SQL_DIR / "constraints.sql").read_text())
         cursor.execute("""
             SELECT relname
             FROM pg_class

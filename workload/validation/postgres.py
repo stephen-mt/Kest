@@ -49,6 +49,37 @@ def _check_schema(cursor):
         if cursor.fetchone()[0] != "f":
             raise AssertionError(f"{table} does not use REPLICA IDENTITY FULL")
 
+    cursor.execute("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND is_nullable = 'YES'
+    """)
+    nullable = set(cursor.fetchall())
+    expected_nullable = {
+        ("PaymentProcessingEvents", "decline_reason"),
+        ("RiskModelPredictions", "actual_outcome"),
+    }
+    if nullable != expected_nullable:
+        raise AssertionError(f"Unexpected nullable columns: {sorted(nullable)}")
+
+    cursor.execute("""
+        SELECT conname FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace AND contype = 'c'
+    """)
+    constraints = {row[0] for row in cursor.fetchall()}
+    expected_constraints = {
+        "transactions_border_valid",
+        "transaction_products_values_valid",
+        "buyer_sessions_causal",
+        "payments_state_valid",
+        "risk_probability_valid",
+        "prediction_probability_valid",
+    }
+    if not expected_constraints <= constraints:
+        raise AssertionError(
+            f"Missing source checks: {sorted(expected_constraints - constraints)}"
+        )
+
 
 def _check_entity_universe(cursor):
     expected = {
@@ -110,6 +141,38 @@ def _check_current_facts(cursor):
             SELECT count(*) FROM "RiskModelPredictions" prediction
             JOIN transactions txn ON txn."EventCode" = prediction.txn_link_ref
             WHERE prediction.prediction_timestamp < txn."EventTimestamp"
+        """,
+        "risk label differs from probability": """
+            SELECT count(*) FROM risk_analytics
+            WHERE "ML_Risk" != CASE
+                WHEN "FraudProb" >= 0.7 THEN 'high'
+                WHEN "FraudProb" >= 0.3 THEN 'medium'
+                ELSE 'low' END
+        """,
+        "prediction label differs from probability": """
+            SELECT count(*) FROM "RiskModelPredictions"
+            WHERE risk_category_predicted != CASE
+                WHEN fraud_probability >= 0.7 THEN 'high'
+                WHEN fraud_probability >= 0.3 THEN 'medium'
+                ELSE 'low' END
+        """,
+        "buyer session violates checkout causality": """
+            SELECT count(*) FROM "BuyerSessionAnalytics"
+            WHERE cart_removals_count > cart_additions_count
+               OR (checkout_completed AND NOT checkout_initiated)
+               OR (bounce_indicator AND (
+                    checkout_initiated OR checkout_completed OR cart_additions_count > 0
+               ))
+        """,
+        "payment stage contradicts amounts or decline": """
+            SELECT count(*) FROM "PaymentProcessingEvents"
+            WHERE (processing_stage = 'authorized' AND amount_processed != 0)
+               OR (processing_stage = 'settled' AND (
+                    amount_processed != amount_requested OR decline_reason IS NOT NULL
+               ))
+               OR (processing_stage = 'failed' AND (
+                    amount_processed != 0 OR decline_reason IS NULL OR retry_count < 1
+               ))
         """,
     }
     for message, query in assertions.items():

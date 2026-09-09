@@ -52,6 +52,8 @@ class LiveEventWriter:
         additions = min(products, self.random.randint(0, 4))
         checkout = additions > 0 and self.random.random() < 0.55
         completed = checkout and self.random.random() < 0.68
+        removals = self.random.randint(0, additions)
+        bounced = pages == 1 and additions == 0
         with self.connection.transaction(), self.connection.cursor() as cursor:
             cursor.execute(
                 """
@@ -68,11 +70,11 @@ class LiveEventWriter:
                     pages,
                     products,
                     additions,
-                    max(0, additions - (1 if completed else 0)),
+                    removals,
                     self.random.randint(0, 8),
                     checkout,
                     completed,
-                    pages == 1,
+                    bounced,
                     self.random.choice(("direct", "search", "affiliate", "social")),
                     self.random.choice(("mobile", "desktop", "tablet")),
                     self.random.choice(("NA", "EU", "APAC", "LATAM")),
@@ -106,13 +108,14 @@ class LiveEventWriter:
                 """
                 SELECT "ProdCat", "Subcategory", "ListingAge", "SellerPointer"
                 FROM products WHERE "SellerPointer" = %s
-                ORDER BY "ListingAge" LIMIT 2
+                ORDER BY "ListingAge"
             """,
                 (vendor,),
             )
             products = cursor.fetchall()
-            if len(products) != 2:
+            if len(products) != 4:
                 raise RuntimeError(f"Seed products missing for {vendor}")
+            products = self.random.sample(products, 2)
             cursor.execute(
                 """
                 INSERT INTO transactions VALUES (
@@ -157,7 +160,7 @@ class LiveEventWriter:
                     self.random.choice(("card", "wallet", "bank_transfer")),
                     "authorized",
                     amount,
-                    amount,
+                    0,
                     "USD",
                     self.random.choice(("nova-pay", "orbit-pay")),
                     uuid.uuid4().hex[:12].upper(),
@@ -209,7 +212,6 @@ class LiveEventWriter:
                 """
                 UPDATE vendors SET
                     "TotalTxns" = (COALESCE(NULLIF("TotalTxns", ''), '0')::bigint + 1)::text,
-                    "CompletedTxns" = "CompletedTxns" + 1,
                     "LastActiveDt" = %s
                 WHERE "SellerKey" = %s
             """,
@@ -223,20 +225,69 @@ class LiveEventWriter:
         return self.random.choice(tuple(self.recent))
 
     def payment_update(self):
-        _, payment_id = self.choose_recent()
         now = utc_now()
+        with self.connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT p."PPE_id", p.transaction_ref, t."VendorLink", p.fraud_score,
+                       p.amount_requested
+                FROM "PaymentProcessingEvents" p
+                JOIN transactions t ON t."EventCode" = p.transaction_ref
+                WHERE p.processing_stage = 'authorized'
+                ORDER BY p.event_timestamp
+                LIMIT 100
+            """)
+            candidates = cursor.fetchall()
+        if not candidates:
+            self.purchase()
+            return self.payment_update()
+        payment_id, event_id, vendor, fraud_score, amount = self.random.choice(
+            candidates
+        )
         with self.connection.transaction(), self.connection.cursor() as cursor:
+            failed = fraud_score >= 0.8 or self.random.random() < 0.05
+            stage = "failed" if failed else "settled"
             cursor.execute(
                 """
                 UPDATE "PaymentProcessingEvents" SET
                     event_timestamp = %s,
-                    processing_stage = 'settled',
+                    processing_stage = %s,
+                    amount_processed = %s,
+                    decline_reason = %s,
                     processing_time_ms = processing_time_ms + %s,
-                    retry_count = retry_count + 1
+                    retry_count = retry_count + %s
                 WHERE "PPE_id" = %s
             """,
-                (now, self.random.randint(5, 120), payment_id),
+                (
+                    now,
+                    stage,
+                    0 if failed else amount,
+                    "risk_decline" if failed else None,
+                    self.random.randint(5, 120),
+                    int(failed),
+                    payment_id,
+                ),
             )
+            status = "failed" if failed else "completed"
+            cursor.execute(
+                """
+                UPDATE transactions
+                SET transaction_financials = transaction_financials || %s
+                WHERE "EventCode" = %s
+                """,
+                (
+                    Jsonb({"status": status, "updated_at": now.isoformat() + "Z"}),
+                    event_id,
+                ),
+            )
+            if not failed:
+                cursor.execute(
+                    """
+                    UPDATE vendors
+                    SET "CompletedTxns" = "CompletedTxns" + 1
+                    WHERE "SellerKey" = %s
+                    """,
+                    (vendor,),
+                )
 
     def risk_prediction(self):
         event_id, _ = self.choose_recent()
@@ -278,12 +329,13 @@ class LiveEventWriter:
 
     def transaction_status_update(self):
         event_id, _ = self.choose_recent()
-        update = {"status": "completed", "updated_at": utc_now().isoformat() + "Z"}
+        update = {"status": "fulfilled", "updated_at": utc_now().isoformat() + "Z"}
         with self.connection.transaction(), self.connection.cursor() as cursor:
             cursor.execute(
                 """
                 UPDATE transactions SET transaction_financials = transaction_financials || %s
                 WHERE "EventCode" = %s
+                  AND transaction_financials->>'status' = 'completed'
             """,
                 (Jsonb(update), event_id),
             )

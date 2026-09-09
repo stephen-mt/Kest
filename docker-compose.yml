@@ -194,7 +194,7 @@ services:
       dockerfile: docker/airflow/Dockerfile
       args:
         AIRFLOW_IMAGE: ${AIRFLOW_IMAGE:?}
-    mem_limit: 1536m
+    mem_limit: 2560m
     cpus: 1.5
     stop_grace_period: 60s
     environment:
@@ -231,10 +231,11 @@ services:
       S3_ENDPOINT_URL: http://minio:9000
       S3_BUCKET: ${MINIO_BUCKET:?}
       BRONZE_PREFIX: ${BRONZE_PREFIX:-bronze/history}
+      ICEBERG_PREFIX: ${ICEBERG_PREFIX:-iceberg}
       ICEBERG_CATALOG: kest
       SILVER_NAMESPACE: ${SILVER_NAMESPACE:-silver}
       GOLD_NAMESPACE: ${GOLD_NAMESPACE:-gold}
-      BATCH_DUCKDB_MEMORY: ${BATCH_DUCKDB_MEMORY:-512MB}
+      BATCH_DUCKDB_MEMORY: ${BATCH_DUCKDB_MEMORY:-1GB}
       PYICEBERG_CATALOG__KEST__TYPE: rest
       PYICEBERG_CATALOG__KEST__URI: http://lakekeeper:8181/catalog
       PYICEBERG_CATALOG__KEST__WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
