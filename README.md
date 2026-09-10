@@ -97,11 +97,8 @@ immutable versioned Silver/Gold namespaces through Lakekeeper, then atomically
 updates `iceberg/_kest_batches/current.json`. Consumers resolve namespaces from
 that pointer. RisingWave remains idle until a streaming phase needs it.
 
-See [docs/CYBERMARKET_END_TO_END.md](docs/CYBERMARKET_END_TO_END.md) for the current end-to-end
-architecture and business rules, and [workload/README.md](workload/README.md) for
-the concise object layout and commands. See
-[docs/NIFI_CDC_AND_TRINO_SQL.md](docs/NIFI_CDC_AND_TRINO_SQL.md) for source onboarding through
-NiFi/Debezium and shared SQL through Trino.
+See [workload/README.md](workload/README.md) for the concise object layout and
+commands.
 
 ## DeliveryOps end-to-end scenario
 
@@ -109,11 +106,3 @@ DeliveryOps is a separate logistics source used to exercise PostgreSQL CDC,
 NiFi raw landing, RisingWave materialized views, Airflow TaskFlow jobs, DuckDB,
 Iceberg, Lakekeeper and Trino. It uses bucket `mini-cybet-delivery` and warehouse
 `delivery-ops`; its commands do not reset the CyberMarket workload.
-
-See [docs/DELIVERY_OPS_END_TO_END.md](docs/DELIVERY_OPS_END_TO_END.md) for the source
-schema, 24-task DAG, 35 Iceberg tables, business rules, runtime commands and the
-governance integration path.
-
-The documentation map is in [docs/README.md](docs/README.md). The production gap
-and target planes are described in
-[docs/DEV_TO_PRODUCTION_GUIDE.md](docs/DEV_TO_PRODUCTION_GUIDE.md).
