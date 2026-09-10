@@ -15,7 +15,9 @@ docker/
   airflow/start.sh              Local UI credentials and standalone startup
   airflow/dags/                 Manually triggered finite batch DAG
   lakekeeper/bootstrap.py      Idempotent empty bucket/warehouse bootstrap
-  nifi/                        Git-managed PostgreSQL CDC flow and health check
+  nifi/
+    bootstrap.py, check.py     Small flow lifecycle entry points
+    kest_nifi/                 API client, flow model and NiFi resource manager
   trino/etc/                   Iceberg/PostgreSQL catalogs and bootstrap SQL
   risingwave/risingwave.toml    Small single-node storage/cache settings
 workload/                       CyberMarket generators, ingestion and transforms

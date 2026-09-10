@@ -1,4 +1,10 @@
-.PHONY: start stop restart logs env lint test platform-up platform-cdc-up platform-down platform-check platform-sql workload-image workload-setup history history-reset cdc generate cdc-drain cdc-test batch batch-check batch-airflow airflow-dag-check workload-check workload-check-history workload-check-history-deep workload-check-cdc
+.PHONY: start stop restart logs env lint test
+.PHONY: platform-up platform-cdc-up platform-down platform-check platform-sql
+.PHONY: workload-image workload-setup history history-reset
+.PHONY: cdc generate cdc-drain cdc-test
+.PHONY: batch batch-check batch-airflow airflow-dag-check
+.PHONY: workload-check workload-check-history workload-check-history-deep
+.PHONY: workload-check-cdc
 
 WORKLOAD_COMPOSE := docker compose -f docker-compose.yml -f compose.workload.yml
 PLATFORM_COMPOSE := docker compose -f docker-compose.yml -f compose.platform.yml --profile platform

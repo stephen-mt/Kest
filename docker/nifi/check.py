@@ -1,38 +1,20 @@
 #!/usr/bin/env python3
 """Check the Git-managed NiFi flow without changing it."""
 
-from bootstrap import FAILURE_PROCESSOR_NAME, FLOW_NAME, Nifi
-
-RUNNING_PROCESSORS = {
-    "Receive Debezium HTTP events",
-    "Hash raw envelope",
-    "Extract CDC metadata",
-    "Set storage attributes",
-    "Write immutable raw envelope",
-    "Build stable Bronze event",
-    "Append Bronze Iceberg event",
-}
+from kest_nifi.client import NifiClient
+from kest_nifi.flow import find_flow
+from kest_nifi.model import FAILURE, FLOW_NAME, RUNNING_PROCESSORS
 
 
 def main():
-    api = Nifi()
-    root = api.request("GET", "/flow/process-groups/root")["processGroupFlow"]
-    group = next(
-        (
-            item
-            for item in root["flow"]["processGroups"]
-            if item["component"]["name"] == FLOW_NAME
-        ),
-        None,
-    )
+    api = NifiClient()
+    group = find_flow(api)
     if group is None:
         raise RuntimeError(f"NiFi flow is missing: {FLOW_NAME}")
 
-    flow = api.request("GET", f"/flow/process-groups/{group['id']}")[
-        "processGroupFlow"
-    ]["flow"]
+    flow = api.get(f"/flow/process-groups/{group['id']}")["processGroupFlow"]["flow"]
     by_name = {item["component"]["name"]: item for item in flow["processors"]}
-    expected = RUNNING_PROCESSORS | {FAILURE_PROCESSOR_NAME}
+    expected = RUNNING_PROCESSORS | {FAILURE}
     missing = expected - by_name.keys()
     if missing:
         raise RuntimeError(f"NiFi processors are missing: {sorted(missing)}")
@@ -42,15 +24,15 @@ def main():
         component = by_name[name]["component"]
         if component["state"] != "RUNNING" or component.get("validationErrors"):
             bad_processors.append(name)
-    failure = by_name[FAILURE_PROCESSOR_NAME]["component"]
+    failure = by_name[FAILURE]["component"]
     if failure["state"] != "STOPPED" or failure.get("validationErrors"):
-        bad_processors.append(FAILURE_PROCESSOR_NAME)
+        bad_processors.append(FAILURE)
     if bad_processors:
         raise RuntimeError(f"NiFi processors are not ready: {bad_processors}")
 
-    services = api.request(
-        "GET", f"/flow/process-groups/{group['id']}/controller-services"
-    )["controllerServices"]
+    services = api.get(f"/flow/process-groups/{group['id']}/controller-services")[
+        "controllerServices"
+    ]
     bad_services = [
         item["component"]["name"]
         for item in services
