@@ -91,18 +91,26 @@ def check_batch(settings):
     bronze_manifest, bronze_manifest_sha = load_manifest(settings)
     if batch_manifest["bronze_manifest_sha256"] != bronze_manifest_sha:
         raise AssertionError("Current batch points to another Bronze manifest")
+    silver_snapshots = pointer["silver_snapshots"]
+    gold_snapshots = pointer["gold_snapshots"]
+    if silver_snapshots != batch_manifest["silver_snapshots"]:
+        raise AssertionError("Silver snapshot pointer and batch manifest differ")
+    if gold_snapshots != batch_manifest["gold_snapshots"]:
+        raise AssertionError("Gold snapshot pointer and batch manifest differ")
 
     source_counts = batch_manifest["source_snapshot"]["rows"]
     silver_counts = {}
-    batch_ids = set()
     for table in EXPECTED_COLUMNS:
         iceberg_table = iceberg_catalog.load_table((silver_namespace, table))
         if iceberg_table.schema().column_names != EXPECTED_COLUMNS[table]:
             raise AssertionError(f"Silver {table} columns differ")
+        snapshot_id = silver_snapshots[table]
+        if iceberg_table.snapshot_by_id(snapshot_id) is None:
+            raise AssertionError(f"Silver {table} snapshot is missing: {snapshot_id}")
         expected = source_counts[table]
         if table in FACT_TABLES:
             expected += bronze_manifest["rows"][table]
-        actual = record_count(iceberg_table)
+        actual = record_count(iceberg_table, snapshot_id=snapshot_id)
         if actual != expected or actual != batch_manifest["silver_rows"][table]:
             raise AssertionError(f"Silver {table}: expected {expected}, got {actual}")
         if (
@@ -110,16 +118,13 @@ def check_batch(settings):
             != bronze_manifest_sha
         ):
             raise AssertionError(f"Silver {table} points to another Bronze manifest")
-        if (
-            iceberg_table.properties.get("kest.source-lsn")
-            != batch_manifest["source_snapshot"]["lsn"]
-        ):
-            raise AssertionError(f"Silver {table} source LSN differs")
-        batch_ids.add(iceberg_table.properties.get("kest.batch-id"))
         silver_counts[table] = actual
 
     cdc_table = iceberg_catalog.load_table((silver_namespace, CDC_TABLE))
-    cdc_data = cdc_table.scan().to_arrow()
+    cdc_snapshot_id = silver_snapshots[CDC_TABLE]
+    if cdc_table.snapshot_by_id(cdc_snapshot_id) is None:
+        raise AssertionError(f"Silver CDC snapshot is missing: {cdc_snapshot_id}")
+    cdc_data = cdc_table.scan(snapshot_id=cdc_snapshot_id).to_arrow()
     cdc_expected = batch_manifest["cdc"]["event_count"]
     if cdc_data.num_rows != cdc_expected:
         raise AssertionError(
@@ -127,11 +132,6 @@ def check_batch(settings):
         )
     if len(set(cdc_data["event_id"].to_pylist())) != cdc_data.num_rows:
         raise AssertionError("Silver CDC contains duplicate event IDs")
-    if cdc_table.properties.get("kest.cdc-through-lsn") != (
-        batch_manifest["cdc"]["through_lsn"] or ""
-    ):
-        raise AssertionError("Silver CDC checkpoint differs")
-    batch_ids.add(cdc_table.properties.get("kest.batch-id"))
     silver_counts[CDC_TABLE] = cdc_data.num_rows
 
     gold_data = {}
@@ -140,19 +140,15 @@ def check_batch(settings):
         iceberg_table = iceberg_catalog.load_table((gold_namespace, table))
         if iceberg_table.schema().column_names != columns:
             raise AssertionError(f"Gold {table} columns differ")
-        if iceberg_table.properties.get("kest.silver-namespace") != silver_namespace:
-            raise AssertionError(f"Gold {table} points to another Silver version")
-        batch_ids.add(iceberg_table.properties.get("kest.batch-id"))
-        data = iceberg_table.scan().to_arrow()
+        snapshot_id = gold_snapshots[table]
+        if iceberg_table.snapshot_by_id(snapshot_id) is None:
+            raise AssertionError(f"Gold {table} snapshot is missing: {snapshot_id}")
+        data = iceberg_table.scan(snapshot_id=snapshot_id).to_arrow()
         if not data.num_rows:
             raise AssertionError(f"Gold {table} is empty")
         gold_data[table] = data
         gold_counts[table] = data.num_rows
 
-    if batch_ids != {pointer["batch_id"]}:
-        raise AssertionError(
-            f"Iceberg tables do not share the current batch: {batch_ids}"
-        )
     if gold_counts != batch_manifest["gold_rows"]:
         raise AssertionError("Gold row counts differ from the batch manifest")
     if gold_counts["vendor_risk_summary"] != source_counts["vendors"]:
@@ -179,7 +175,9 @@ def check_batch(settings):
         "cdc_events": cdc_data.num_rows,
         "gold_namespace": gold_namespace,
         "gold_rows": gold_counts,
+        "gold_snapshots": gold_snapshots,
         "silver_namespace": silver_namespace,
         "silver_rows": silver_counts,
+        "silver_snapshots": silver_snapshots,
         "source_lsn": batch_manifest["source_snapshot"]["lsn"],
     }

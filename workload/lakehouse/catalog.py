@@ -64,14 +64,8 @@ def ensure_namespace(iceberg_catalog, namespace):
         iceberg_catalog.create_namespace(identifier)
 
 
-def remove_namespace(iceberg_catalog, namespace):
-    identifier = (namespace,)
-    if identifier not in iceberg_catalog.list_namespaces():
-        return
-    for table in iceberg_catalog.list_tables(identifier):
-        iceberg_catalog.purge_table(table)
-    iceberg_catalog.drop_namespace(identifier)
-
-
-def record_count(table):
-    return sum(task.file.record_count for task in table.scan().plan_files())
+def record_count(table, snapshot_id=None):
+    scan = (
+        table.scan(snapshot_id=snapshot_id) if snapshot_id is not None else table.scan()
+    )
+    return sum(task.file.record_count for task in scan.plan_files())

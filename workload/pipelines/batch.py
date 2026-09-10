@@ -17,6 +17,7 @@ from workload.cybermarket.schema import (
     EXPECTED_COLUMNS,
     FACT_TABLES,
     JSON_COLUMNS,
+    PRIMARY_KEYS,
     TABLES,
 )
 from workload.lakehouse.catalog import (
@@ -27,7 +28,6 @@ from workload.lakehouse.catalog import (
     load_manifest,
     parquet_schema,
     record_count,
-    remove_namespace,
     table_key,
 )
 from workload.lakehouse.cdc import CDC_TABLE, committed_event_table
@@ -35,6 +35,15 @@ from workload.lakehouse.publication import (
     load_current_pointer,
     publish_pointer,
     write_batch_manifest,
+)
+from workload.lakehouse.tables import (
+    BRONZE_BOOTSTRAP_PROPERTY,
+    BRONZE_MANIFEST_PROPERTY,
+    current_data_files,
+    current_snapshot_id,
+    load_or_create_table,
+    refresh_arrow_table,
+    refresh_fact_table,
 )
 
 GOLD_QUERIES = {
@@ -145,8 +154,9 @@ def _sql_literal(value):
 def _postgres_snapshot(connection, table, schema):
     columns = EXPECTED_COLUMNS[table]
     selection = ", ".join(_quoted(column) for column in columns)
+    ordering = ", ".join(_quoted(column) for column in PRIMARY_KEYS[table])
     with connection.cursor() as cursor:
-        cursor.execute(f"SELECT {selection} FROM {_quoted(table)}")
+        cursor.execute(f"SELECT {selection} FROM {_quoted(table)} ORDER BY {ordering}")
         rows = cursor.fetchall()
 
     json_column = JSON_COLUMNS.get(table)
@@ -228,10 +238,12 @@ def _stage_history_files(
     return uris
 
 
-def _stage_current_file(client, settings, iceberg_table, table, data, temp_dir):
+def _stage_current_file(
+    client, settings, iceberg_table, table, data, temp_dir, batch_id
+):
     output = Path(temp_dir) / f"{table}-current.parquet"
     pq.write_table(data, output, compression="zstd", compression_level=1)
-    bucket, key = table_key(iceberg_table, "current.parquet")
+    bucket, key = table_key(iceberg_table, f"current-{batch_id}.parquet")
     if bucket != settings.s3_bucket:
         raise RuntimeError(f"Iceberg table uses unexpected bucket: {bucket}")
     client.upload_file(
@@ -261,6 +273,20 @@ def _build_silver(
     ensure_namespace(iceberg_catalog, namespace)
     client = s3_client(settings)
 
+    for table in FACT_TABLES:
+        identifier = (namespace, table)
+        if not iceberg_catalog.table_exists(identifier):
+            continue
+        existing = iceberg_catalog.load_table(identifier)
+        if (
+            existing.properties.get(BRONZE_BOOTSTRAP_PROPERTY) == "complete"
+            and existing.properties.get(BRONZE_MANIFEST_PROPERTY) != manifest_sha
+        ):
+            raise RuntimeError(
+                "Bronze history manifest changed after Silver bootstrap; "
+                "incremental Bronze-history reconciliation is not implemented"
+            )
+
     connection = duckdb.connect()
     connection.execute("SET threads = 2")
     connection.execute(
@@ -269,59 +295,73 @@ def _build_silver(
     connection.execute("SET preserve_insertion_order = false")
     row_counts = {}
     data_files = {}
+    snapshots = {}
     try:
         with tempfile.TemporaryDirectory(prefix="kest-batch-") as temp_dir:
             for table in EXPECTED_COLUMNS:
                 schema = schemas[table]
                 identifier = (namespace, table)
-                iceberg_table = iceberg_catalog.create_table(
+                iceberg_table, _ = load_or_create_table(
+                    iceberg_catalog,
                     identifier,
-                    schema=schema,
-                    properties={
+                    schema,
+                    {
                         "kest.layer": "silver",
-                        "kest.batch-id": batch_id,
-                        "kest.bronze-manifest-sha256": manifest_sha,
+                        BRONZE_BOOTSTRAP_PROPERTY: "pending",
                         "kest.source-captured-at": source_metadata["captured_at"],
                         "kest.source-lsn": source_metadata["lsn"],
                         "write.parquet.compression-codec": "zstd",
                         "write.target-file-size-bytes": str(128 * 1024**2),
                     },
                 )
-                history_uris = []
-                if table in FACT_TABLES:
-                    history_uris = _stage_history_files(
-                        connection,
-                        client,
-                        settings,
-                        iceberg_table,
-                        table,
-                        history[table],
-                        temp_dir,
-                    )
                 current = source_tables[table]
+                properties = {
+                    "kest.layer": "silver",
+                    "kest.batch-id": batch_id,
+                    BRONZE_MANIFEST_PROPERTY: manifest_sha,
+                    "kest.source-captured-at": source_metadata["captured_at"],
+                    "kest.source-lsn": source_metadata["lsn"],
+                }
+                snapshot_properties = {
+                    "kest.batch-id": batch_id,
+                    "kest.source": (
+                        "bronze-history+postgres-snapshot"
+                        if table in FACT_TABLES
+                        else "postgres-snapshot"
+                    ),
+                }
                 if table in FACT_TABLES:
-                    if current.num_rows:
-                        history_uris.append(
-                            _stage_current_file(
-                                client,
-                                settings,
-                                iceberg_table,
-                                table,
-                                current,
-                                temp_dir,
-                            )
-                        )
-                    with iceberg_table.transaction() as transaction:
-                        transaction.add_files(
-                            history_uris,
-                            snapshot_properties={
-                                "kest.source": "bronze-history+postgres-snapshot"
-                            },
-                        )
-                elif current.num_rows:
-                    iceberg_table.append(
+                    refresh_fact_table(
+                        iceberg_table,
+                        manifest_sha,
                         current,
-                        snapshot_properties={"kest.source": "postgres-snapshot"},
+                        properties,
+                        snapshot_properties,
+                        stage_history=lambda: _stage_history_files(
+                            connection,
+                            client,
+                            settings,
+                            iceberg_table,
+                            table,
+                            history[table],
+                            temp_dir,
+                        ),
+                        stage_current=lambda: _stage_current_file(
+                            client,
+                            settings,
+                            iceberg_table,
+                            table,
+                            current,
+                            temp_dir,
+                            batch_id,
+                        ),
+                    )
+                else:
+                    refresh_arrow_table(
+                        iceberg_table,
+                        current,
+                        properties,
+                        snapshot_properties,
                     )
                 iceberg_table.refresh()
                 expected = current.num_rows
@@ -334,33 +374,45 @@ def _build_silver(
                     )
                 row_counts[table] = actual
                 data_files[table] = [
-                    task.file.file_path for task in iceberg_table.scan().plan_files()
+                    str(path) for path in current_data_files(iceberg_table)
                 ]
+                snapshots[table] = current_snapshot_id(iceberg_table)
                 print(f"Silver {table}: {actual:,} rows")
 
-            cdc_table = iceberg_catalog.create_table(
+            cdc_table, _ = load_or_create_table(
+                iceberg_catalog,
                 (namespace, CDC_TABLE),
-                schema=cdc_data.schema,
-                properties={
+                cdc_data.schema,
+                {
                     "kest.layer": "silver",
-                    "kest.batch-id": batch_id,
                     "kest.cdc-through-lsn": cdc_checkpoint or "",
                     "kest.cdc-commit-count": str(cdc_commit_count),
                     "write.parquet.compression-codec": "zstd",
                 },
             )
-            if cdc_data.num_rows:
-                cdc_table.append(
-                    cdc_data, snapshot_properties={"kest.source": "committed-raw-cdc"}
-                )
+            refresh_arrow_table(
+                cdc_table,
+                cdc_data,
+                {
+                    "kest.layer": "silver",
+                    "kest.batch-id": batch_id,
+                    "kest.cdc-through-lsn": cdc_checkpoint or "",
+                    "kest.cdc-commit-count": str(cdc_commit_count),
+                },
+                {
+                    "kest.batch-id": batch_id,
+                    "kest.source": "committed-raw-cdc",
+                },
+            )
             row_counts[CDC_TABLE] = record_count(cdc_table)
+            snapshots[CDC_TABLE] = current_snapshot_id(cdc_table)
             print(f"Silver {CDC_TABLE}: {cdc_data.num_rows:,} rows")
     finally:
         connection.close()
-    return row_counts, data_files
+    return row_counts, data_files, snapshots
 
 
-def _build_gold(settings, batch_id, gold_namespace, silver_files):
+def _build_gold(settings, batch_id, gold_namespace, silver_namespace, silver_files):
     iceberg_catalog = catalog(settings)
     ensure_namespace(iceberg_catalog, gold_namespace)
     connection = duckdb.connect()
@@ -381,6 +433,7 @@ def _build_gold(settings, batch_id, gold_namespace, silver_files):
     )
     connection.register_filesystem(filesystem)
     row_counts = {}
+    snapshots = {}
     try:
         for table, alias in SILVER_ALIASES.items():
             paths = ", ".join(_sql_literal(path) for path in silver_files[table])
@@ -389,27 +442,38 @@ def _build_gold(settings, batch_id, gold_namespace, silver_files):
             )
         for table, query in GOLD_QUERIES.items():
             result = connection.execute(query).to_arrow_table()
-            iceberg_table = iceberg_catalog.create_table(
+            iceberg_table, _ = load_or_create_table(
+                iceberg_catalog,
                 (gold_namespace, table),
-                schema=result.schema,
-                properties={
+                result.schema,
+                {
                     "kest.layer": "gold",
-                    "kest.batch-id": batch_id,
-                    "kest.silver-namespace": silver_files["_namespace"],
+                    "kest.silver-namespace": silver_namespace,
                     "write.parquet.compression-codec": "zstd",
                 },
             )
-            iceberg_table.append(
-                result, snapshot_properties={"kest.source": "silver-batch"}
+            refresh_arrow_table(
+                iceberg_table,
+                result,
+                {
+                    "kest.layer": "gold",
+                    "kest.batch-id": batch_id,
+                    "kest.silver-namespace": silver_namespace,
+                },
+                {
+                    "kest.batch-id": batch_id,
+                    "kest.source": "silver-batch",
+                },
             )
             actual = record_count(iceberg_table)
             if actual != result.num_rows or actual == 0:
                 raise RuntimeError(f"Gold {table} row count is invalid: {actual}")
             row_counts[table] = actual
+            snapshots[table] = current_snapshot_id(iceberg_table)
             print(f"Gold {table}: {actual:,} rows")
     finally:
         connection.close()
-    return row_counts
+    return row_counts, snapshots
 
 
 def run():
@@ -432,60 +496,57 @@ def run():
         + "-"
         + uuid.uuid4().hex[:8]
     )
-    version = batch_id.replace("-", "_").lower()
-    silver_version = f"{settings.silver_namespace}_{version}"
-    gold_version = f"{settings.gold_namespace}_{version}"
-    iceberg_catalog = catalog(settings)
-    published = False
-    try:
-        silver_rows, silver_files = _build_silver(
-            settings,
-            batch_id,
-            silver_version,
-            manifest,
-            manifest_sha,
-            history,
-            schemas,
-            source_tables,
-            source_metadata,
-            cdc_data,
-            cdc_checkpoint,
-            cdc_commit_count,
-        )
-        silver_files["_namespace"] = silver_version
-        gold_rows = _build_gold(settings, batch_id, gold_version, silver_files)
+    silver_rows, silver_files, silver_snapshots = _build_silver(
+        settings,
+        batch_id,
+        settings.silver_namespace,
+        manifest,
+        manifest_sha,
+        history,
+        schemas,
+        source_tables,
+        source_metadata,
+        cdc_data,
+        cdc_checkpoint,
+        cdc_commit_count,
+    )
+    gold_rows, gold_snapshots = _build_gold(
+        settings,
+        batch_id,
+        settings.gold_namespace,
+        settings.silver_namespace,
+        silver_files,
+    )
 
-        result = {
-            "batch_id": batch_id,
-            "bronze_manifest_sha256": manifest_sha,
-            "cdc": {
-                "commit_count": cdc_commit_count,
-                "event_count": cdc_data.num_rows,
-                "through_lsn": cdc_checkpoint,
-            },
-            "gold_namespace": gold_version,
-            "gold_rows": gold_rows,
-            "schema_version": 2,
-            "silver_namespace": silver_version,
-            "silver_rows": silver_rows,
-            "source_snapshot": source_metadata,
-        }
-        manifest_key = write_batch_manifest(settings, batch_id, result)
-        pointer = {
-            "batch_id": batch_id,
-            "gold_namespace": gold_version,
-            "manifest_key": manifest_key,
-            "published_at": datetime.now(timezone.utc).isoformat(),
-            "schema_version": 1,
-            "silver_namespace": silver_version,
-        }
-        publish_pointer(settings, pointer, expected_pointer_etag)
-        published = True
-    except Exception:
-        if not published:
-            remove_namespace(iceberg_catalog, gold_version)
-            remove_namespace(iceberg_catalog, silver_version)
-        raise
+    result = {
+        "batch_id": batch_id,
+        "bronze_manifest_sha256": manifest_sha,
+        "cdc": {
+            "commit_count": cdc_commit_count,
+            "event_count": cdc_data.num_rows,
+            "through_lsn": cdc_checkpoint,
+        },
+        "gold_namespace": settings.gold_namespace,
+        "gold_rows": gold_rows,
+        "gold_snapshots": gold_snapshots,
+        "schema_version": 3,
+        "silver_namespace": settings.silver_namespace,
+        "silver_rows": silver_rows,
+        "silver_snapshots": silver_snapshots,
+        "source_snapshot": source_metadata,
+    }
+    manifest_key = write_batch_manifest(settings, batch_id, result)
+    pointer = {
+        "batch_id": batch_id,
+        "gold_namespace": settings.gold_namespace,
+        "gold_snapshots": gold_snapshots,
+        "manifest_key": manifest_key,
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": 2,
+        "silver_namespace": settings.silver_namespace,
+        "silver_snapshots": silver_snapshots,
+    }
+    publish_pointer(settings, pointer, expected_pointer_etag)
 
     print(json.dumps(result, indent=2, sort_keys=True))
     return result

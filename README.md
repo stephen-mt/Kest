@@ -92,10 +92,11 @@ CDC remain stopped unless explicitly invoked. Its environment is locked in
 `requirements.txt`; `make env` creates the same local Python environment for
 DuckDB, PyIceberg, Parquet/S3 and PostgreSQL development.
 
-CyberMarket's manual Airflow DAG runs a finite DuckDB batch. Each run writes
-immutable versioned Silver/Gold namespaces through Lakekeeper, then atomically
-updates `iceberg/_kest_batches/current.json`. Consumers resolve namespaces from
-that pointer. RisingWave remains idle until a streaming phase needs it.
+CyberMarket's manual Airflow DAG runs a finite DuckDB batch against stable
+`silver` and `gold` Iceberg namespaces. Iceberg snapshots version each table;
+after every table commit succeeds, Kest atomically updates
+`iceberg/_kest_batches/current.json` with the published snapshot IDs. RisingWave
+remains idle until a streaming phase needs it.
 
 See [workload/README.md](workload/README.md) for the concise object layout and
 commands.

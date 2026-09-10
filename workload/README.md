@@ -63,12 +63,23 @@ keeps the ten source-shaped tables and adds `cdc_events`, a deduplicated Iceberg
 audit table built only from committed raw batches with a through-LSN checkpoint.
 Fact tables combine Bronze history with the consistent source snapshot.
 
-Every run writes new immutable `silver_<batch-id>` and `gold_<batch-id>`
-namespaces. After all checks and the immutable batch manifest succeed, one
-conditional PUT changes `current.json`. Concurrent publishers cannot overwrite
-one another, and consumers never observe a partly replaced layer. Old versions
-remain available for rollback and may be removed later under a retention policy.
-JSONB values are stored as JSON strings because Iceberg has no native JSON type.
+Silver and Gold use long-lived `silver` and `gold` namespaces. Fact tables copy
+the immutable Bronze history once, then replace only their current PostgreSQL
+snapshot files. Dimension, CDC and derived Gold tables use idempotent replacement
+semantics. Iceberg snapshots retain table history without cloning a namespace for
+each run.
+
+After all table commits and the immutable batch manifest succeed, one conditional
+PUT changes `current.json`. The pointer records the snapshot ID of every Silver
+and Gold table, so the last complete batch remains readable when a later
+multi-table run fails. Concurrent publishers cannot overwrite one another. JSONB
+values are stored as JSON strings because Iceberg has no native JSON type.
+
+A failed storage write can leave an unreferenced
+`data/current-<batch-id>.parquet` object. Kest does not delete that path during
+failure handling because the catalog commit may have succeeded; use Iceberg
+orphan-file maintenance after the retention window. Stable tables and the last
+published snapshot pointer are never purged by a batch failure.
 
 Gold contains four small query models:
 
@@ -96,6 +107,8 @@ make cdc-drain        # land pending changes and exit
 make batch            # build and publish Silver/Gold Iceberg tables directly
 make batch-check      # validate Iceberg schemas, counts and Gold rollups
 make batch-airflow    # trigger the same two-step batch through Airflow
+make batch-legacy-clean # dry-run listing of old versioned namespaces
+make batch-legacy-purge # explicitly purge only the reviewed legacy namespaces
 make airflow-dag-check # list parsed DAGs and import errors
 make workload-check           # State A: schema and canonical operational seed
 make workload-check-history   # State B: State A plus Parquet and manifest

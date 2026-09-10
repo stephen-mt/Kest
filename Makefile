@@ -2,7 +2,7 @@
 .PHONY: platform-up platform-cdc-up platform-down platform-check platform-sql
 .PHONY: workload-image workload-setup history history-reset
 .PHONY: cdc generate cdc-drain cdc-test
-.PHONY: batch batch-check batch-airflow airflow-dag-check
+.PHONY: batch batch-check batch-airflow batch-legacy-clean batch-legacy-purge airflow-dag-check
 .PHONY: workload-check workload-check-history workload-check-history-deep
 .PHONY: workload-check-cdc
 .PHONY: delivery-up delivery-image delivery-setup delivery-seed delivery-source-check
@@ -150,6 +150,12 @@ batch: workload-image
 
 batch-check: workload-image
 	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.validation.state --phase batch
+
+batch-legacy-clean: workload-image
+	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.lakehouse.maintenance
+
+batch-legacy-purge: workload-image
+	$(WORKLOAD_COMPOSE) run --rm workload python -m workload.lakehouse.maintenance --purge
 
 batch-airflow:
 	docker compose exec -T airflow airflow dags trigger cybermarket_batch

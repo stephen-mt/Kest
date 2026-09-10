@@ -149,6 +149,25 @@ EXPECTED_COLUMNS = {
     ],
 }
 
+PRIMARY_KEYS = {
+    "markets": ["PlatCode"],
+    "vendors": ["SellerKey"],
+    "buyers": ["AcqCode"],
+    "products": ["ProdCat", "Subcategory", "ListingAge", "SellerPointer"],
+    "transactions": ["EventCode"],
+    "transaction_products": [
+        "EventLink",
+        "ProdCat",
+        "Subcategory",
+        "ListingAge",
+        "SellerPointer",
+    ],
+    "BuyerSessionAnalytics": ["BSA_id"],
+    "PaymentProcessingEvents": ["PPE_id"],
+    "risk_analytics": ["TxnLink"],
+    "RiskModelPredictions": ["RMP_id"],
+}
+
 EXPECTED_TYPES = {
     "markets": [
         "text",
