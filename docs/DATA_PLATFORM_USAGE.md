@@ -19,23 +19,26 @@ Nền tảng đã có:
 - Lakekeeper làm Iceberg REST catalog.
 - Airflow làm batch orchestrator.
 - RisingWave làm streaming engine single-node.
+- NiFi làm ingestion canvas và ghi event sang Landing/Bronze.
+- Debezium Server làm PostgreSQL CDC bridge tùy chọn.
+- Trino làm shared SQL engine cho Iceberg và PostgreSQL.
 - DuckDB, PyArrow, PyIceberg, S3FS và Psycopg để viết job.
 
 Nền tảng chưa có:
 
 - màn hình **Add source**;
 - source registry và schema registry dùng chung;
-- connector framework tổng quát như Airbyte, Debezium hoặc Kafka Connect;
+- connector registry/control-plane tổng quát cho nhiều loại source;
 - secret manager;
-- dịch vụ SQL nhiều người dùng như Trino;
 - framework quản lý SQL model như dbt;
-- generic ingestion package độc lập với workload mẫu;
+- custom Add Source API độc lập với NiFi canvas;
 - monitoring cho freshness, CDC lag, schema drift và data quality.
 
 Vì vậy, ở trạng thái hiện tại:
 
 - Data engineer có thể thêm source bằng code, cấu hình container và Airflow DAG.
-- Analyst chưa thể tự bấm Add source rồi viết transform trên UI.
+- Analyst chưa thể tự bấm một form Add source; operator/data engineer có thể copy
+  NiFi flow và cấu hình connector theo contract.
 - Lakekeeper UI dùng để xem/quản lý catalog; nó không kéo dữ liệu nguồn và không
   phải SQL warehouse.
 - Airflow UI dùng để chạy và theo dõi DAG đã viết sẵn; nó không tự sinh connector.
@@ -111,6 +114,8 @@ Các endpoint trên host:
 | MinIO Console | `http://127.0.0.1:9001` |
 | Airflow UI/API | `http://127.0.0.1:8080` |
 | RisingWave PostgreSQL protocol | `127.0.0.1:4566` |
+| NiFi UI | `https://127.0.0.1:8090/nifi/` |
+| Trino HTTP/JDBC | `127.0.0.1:8081` |
 
 ### Data engineer
 
@@ -120,13 +125,10 @@ hiện tại.
 
 ### Analyst hoặc BI user
 
-Analyst dùng dữ liệu sau khi data engineer publish Iceberg table. Hiện tại họ
-cần client PyIceberg/DuckDB hoặc một query engine bổ sung. Lakekeeper trả catalog
-metadata và hỗ trợ table access; nó không nhận SQL như database warehouse.
-
-Nếu cần Power BI, Tableau, Superset hoặc JDBC/ODBC cho nhiều người, nên thêm
-Trino hoặc engine tương đương. Query engine là lớp consumption; nó không phải
-điều kiện để ingest và transform ở local.
+Analyst dùng Trino để query Iceberg bằng SQL hoặc JDBC sau khi data engineer
+publish table. Lakekeeper trả catalog metadata và hỗ trợ table access; nó không
+nhận SQL như database warehouse. Xem quy trình thao tác tại
+[NIFI_TRINO_USAGE.md](NIFI_TRINO_USAGE.md).
 
 ## 4. Quy trình chuẩn để thêm source
 
@@ -204,11 +206,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT ON TABLES TO kest_erp_reader;
 ```
 
-Nếu dùng logical CDC theo cách hiện tại của Kest, source PostgreSQL phải:
+Nếu dùng logical CDC qua Debezium/NiFi, source PostgreSQL phải:
 
 - bật `wal_level=logical`;
 - có đủ `max_replication_slots` và `max_wal_senders`;
-- cài output plugin `wal2json`;
+- hỗ trợ output plugin chuẩn `pgoutput`;
 - cấp quyền replication;
 - đặt WAL retention limit và theo dõi lag.
 
@@ -323,9 +325,10 @@ Watermark phải sắp xếp duy nhất, ví dụ `(updated_at, id)`:
 
 #### CDC
 
-CDC worker phải peek/read without ack, ghi raw, commit rồi mới ack. Slot name gắn
-với source và environment. Hai consumer cần checkpoint độc lập thì không dùng
-chung một slot.
+CDC connector lưu offset riêng và đẩy envelope vào durable NiFi flow. Slot name
+gắn với source và environment. Hai consumer cần checkpoint độc lập thì không
+dùng chung một slot. Workload mẫu cũ vẫn dùng protocol `wal2json` riêng với
+commit manifest; hai đường không dùng chung replication slot.
 
 Không chạy logical CDC vô hạn trong Airflow task. Local có thể dùng một Compose
 profile/service chạy foreground. Production chạy worker dưới container
@@ -517,9 +520,9 @@ người dùng.
 
 #### Shared SQL engine
 
-Phù hợp analyst, BI và JDBC/ODBC. Cần thêm Trino hoặc engine tương đương, cấu hình
-Iceberg REST catalog tới Lakekeeper và S3 tới MinIO. BI kết nối query engine,
-không kết nối trực tiếp Lakekeeper.
+Phù hợp analyst, BI và JDBC/ODBC. Profile tùy chọn hiện đã có Trino, cấu hình
+Iceberg REST catalog tới Lakekeeper và S3 tới MinIO. BI kết nối Trino, không kết
+nối trực tiếp Lakekeeper.
 
 Nếu mục tiêu là “user đăng nhập, chọn source, viết SQL transform và publish”, cần
 xây thêm product/control-plane. Lakekeeper và Airflow không tự cung cấp workflow
@@ -543,7 +546,7 @@ Change rate: 200 rows/second
 1. Xác nhận primary/foreign key.
 2. Chốt money, currency, timestamp và delete semantics.
 3. Tạo `kest_erp_reader` với SELECT + REPLICATION.
-4. Bật logical WAL và cài `wal2json`.
+4. Bật logical WAL và dùng output plugin chuẩn `pgoutput`.
 5. Đặt slot riêng `kest_erp_orders_prod`.
 6. Đặt WAL retention và alert.
 7. Kiểm tra kết nối từ `kest-net`.

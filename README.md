@@ -1,7 +1,7 @@
 # Kest local environment
 
 Local data-platform environment with three isolated PostgreSQL instances, MinIO,
-Lakekeeper, RisingWave, Airflow and the optional CyberMarket workload. The
+Lakekeeper, RisingWave, Airflow, optional NiFi/Trino services and the optional CyberMarket workload. The
 workload includes reproducible Bronze history, committed raw CDC and a finite
 Silver/Gold Iceberg batch.
 
@@ -15,6 +15,8 @@ docker/
   airflow/start.sh              Local UI credentials and standalone startup
   airflow/dags/                 Manually triggered finite batch DAG
   lakekeeper/bootstrap.py      Idempotent empty bucket/warehouse bootstrap
+  nifi/                        Git-managed PostgreSQL CDC flow and health check
+  trino/etc/                   Iceberg/PostgreSQL catalogs and bootstrap SQL
   risingwave/risingwave.toml    Small single-node storage/cache settings
 workload/                       CyberMarket generators, ingestion and transforms
 ```
@@ -53,6 +55,8 @@ migration and bootstrap steps run in the required order.
 | MinIO API | http://127.0.0.1:9000 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` |
 | MinIO Console | http://127.0.0.1:9001 | Same MinIO credentials |
 | RisingWave SQL | `127.0.0.1:4566` | User `root`, database `dev`, no password |
+| NiFi (optional) | https://127.0.0.1:8090/nifi/ | `NIFI_USERNAME`, `NIFI_PASSWORD` |
+| Trino (optional) | http://127.0.0.1:8081 | Local authentication disabled |
 
 PostgreSQL ports stay inside `kest-net`. Lakekeeper connects to MinIO through
 `http://minio:9000/` on that network. Airflow uses `LocalExecutor`; RisingWave uses
@@ -66,6 +70,10 @@ make restart    # Stop and start with metadata/bootstrap checks
 make logs       # Follow service logs
 docker compose ps
 ```
+
+Start the optional ingestion UI and shared SQL engine with `make platform-up`.
+After reviewing the CDC table allowlist, `make platform-cdc-up` also starts
+Debezium. Use `make platform-down` to stop all three optional services.
 
 The five named volumes preserve PostgreSQL, MinIO and RisingWave state. Airflow
 metadata lives in `postgres-airflow-data`; UI credentials are restored from `.env`.
@@ -86,4 +94,6 @@ that pointer. RisingWave remains idle until a streaming phase needs it.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current end-to-end
 architecture and business rules, and [workload/README.md](workload/README.md) for
-the concise object layout and commands.
+the concise object layout and commands. See
+[docs/NIFI_TRINO_USAGE.md](docs/NIFI_TRINO_USAGE.md) for source onboarding through
+NiFi/Debezium and shared SQL through Trino.
