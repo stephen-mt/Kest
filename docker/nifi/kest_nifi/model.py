@@ -25,6 +25,8 @@ RUNNING_PROCESSORS = frozenset(
 
 @dataclass(frozen=True)
 class FlowConfig:
+    flow_name: str
+    parameter_context_name: str
     source_name: str
     listener_port: str
     listener_path: str
@@ -32,10 +34,16 @@ class FlowConfig:
     access_key: str
     secret_key: str
     warehouse: str
+    bronze_namespace: str
+    bronze_table: str
 
     @classmethod
     def from_env(cls) -> FlowConfig:
         return cls(
+            flow_name=os.environ.get("NIFI_FLOW_NAME", FLOW_NAME),
+            parameter_context_name=os.environ.get(
+                "NIFI_PARAMETER_CONTEXT_NAME", PARAMETER_CONTEXT_NAME
+            ),
             source_name=os.environ.get("INGESTION_SOURCE_NAME", "postgres-source"),
             listener_port=os.environ.get("NIFI_LISTENER_PORT", "9090"),
             listener_path=os.environ.get("INGESTION_HTTP_PATH", "cdc/postgres-source"),
@@ -43,6 +51,10 @@ class FlowConfig:
             access_key=os.environ["MINIO_ROOT_USER"],
             secret_key=os.environ["MINIO_ROOT_PASSWORD"],
             warehouse=os.environ["LAKEKEEPER_WAREHOUSE"],
+            bronze_namespace=os.environ.get(
+                "NIFI_BRONZE_NAMESPACE", "bronze_ingestion"
+            ),
+            bronze_table=os.environ.get("NIFI_BRONZE_TABLE", "postgres_cdc_events"),
         )
 
     def parameters(self) -> dict[str, tuple[str, bool]]:
@@ -56,8 +68,8 @@ class FlowConfig:
             "s3.secret-key": (self.secret_key, True),
             "catalog.uri": ("http://lakekeeper:8181/catalog", False),
             "catalog.warehouse": (self.warehouse, False),
-            "bronze.namespace": ("bronze_ingestion", False),
-            "bronze.table": ("postgres_cdc_events", False),
+            "bronze.namespace": (self.bronze_namespace, False),
+            "bronze.table": (self.bronze_table, False),
         }
 
 

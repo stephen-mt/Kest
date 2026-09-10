@@ -1,0 +1,45 @@
+{
+  "contract_version": "1.0.0",
+  "data_product": "delivery-operations",
+  "domain": "logistics",
+  "owner": "delivery-data@kest.local",
+  "source": {
+    "name": "delivery-ops",
+    "type": "postgresql",
+    "database": "delivery_ops",
+    "freshness_minutes": 15,
+    "replay_cursor": "PostgreSQL LSN",
+    "retention_days": 365
+  },
+  "classifications": {
+    "public": ["hubs", "service_levels"],
+    "internal": ["shipments", "shipment_events", "routes", "charges"],
+    "restricted": ["customers", "addresses", "delivery_attempts"]
+  },
+  "pii_columns": [
+    "customers.full_name",
+    "customers.phone_raw",
+    "customers.email_raw",
+    "addresses.line1_raw",
+    "addresses.latitude",
+    "addresses.longitude",
+    "delivery_attempts.recipient_name_raw"
+  ],
+  "tables": {
+    "shipments": {
+      "primary_key": ["shipment_id"],
+      "watermark": ["updated_at", "shipment_id"],
+      "delete_semantics": "soft-delete"
+    },
+    "shipment_events": {
+      "primary_key": ["event_row_id"],
+      "business_key": ["partner_event_id"],
+      "watermark": ["recorded_at", "event_row_id"],
+      "dedup_order": ["source_version desc", "recorded_at desc", "event_row_id desc"]
+    },
+    "charges": {
+      "primary_key": ["charge_id"],
+      "watermark": ["updated_at", "charge_id"]
+    }
+  }
+}

@@ -3,14 +3,15 @@
 
 from kest_nifi.client import NifiClient
 from kest_nifi.flow import find_flow
-from kest_nifi.model import FAILURE, FLOW_NAME, RUNNING_PROCESSORS
+from kest_nifi.model import FAILURE, RUNNING_PROCESSORS, FlowConfig
 
 
 def main():
     api = NifiClient()
-    group = find_flow(api)
+    config = FlowConfig.from_env()
+    group = find_flow(api, config.flow_name)
     if group is None:
-        raise RuntimeError(f"NiFi flow is missing: {FLOW_NAME}")
+        raise RuntimeError(f"NiFi flow is missing: {config.flow_name}")
 
     flow = api.get(f"/flow/process-groups/{group['id']}")["processGroupFlow"]["flow"]
     by_name = {item["component"]["name"]: item for item in flow["processors"]}
@@ -43,7 +44,7 @@ def main():
         raise RuntimeError(f"NiFi controller services are not ready: {bad_services}")
 
     print(
-        f"NiFi flow ready: {FLOW_NAME} "
+        f"NiFi flow ready: {config.flow_name} "
         f"({len(flow['processors'])} processors, {len(services)} services, "
         "failure queue retained)"
     )

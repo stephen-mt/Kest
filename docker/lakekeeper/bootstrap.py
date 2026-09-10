@@ -1,5 +1,6 @@
-"""Initialize one empty MinIO bucket and Lakekeeper warehouse at startup."""
+"""Initialize a MinIO bucket and its Lakekeeper warehouse."""
 
+import argparse
 import json
 import subprocess
 import urllib.error
@@ -43,17 +44,19 @@ def request_json(base_url, path, payload=None, method=None):
         ) from None
 
 
-def ensure_bucket():
+def ensure_bucket(bucket):
     compose(
         "exec",
         "-T",
+        "-e",
+        f"KEST_BOOTSTRAP_BUCKET={bucket}",
         "minio",
         "sh",
         "-ec",
         "mc alias set kest-local http://127.0.0.1:9000 "
         '"$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null; '
-        'mc mb --ignore-existing "kest-local/$MINIO_BUCKET" >/dev/null; '
-        'mc version enable "kest-local/$MINIO_BUCKET" >/dev/null',
+        'mc mb --ignore-existing "kest-local/$KEST_BOOTSTRAP_BUCKET" >/dev/null; '
+        'mc version enable "kest-local/$KEST_BOOTSTRAP_BUCKET" >/dev/null',
     )
 
 
@@ -125,17 +128,51 @@ def ensure_warehouse(base_url, name, iceberg_prefix, minio):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--delivery", action="store_true")
+    parser.add_argument("--bucket")
+    parser.add_argument("--warehouse")
+    parser.add_argument("--prefix")
+    args = parser.parse_args()
+    compose_files = ()
+    if args.delivery:
+        compose_files = (
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "compose.platform.yml",
+            "-f",
+            "compose.delivery.yml",
+            "--profile",
+            "delivery",
+        )
     config = json.loads(
-        compose("config", "--format", "json", capture_output=True).stdout
+        compose(
+            *compose_files, "config", "--format", "json", capture_output=True
+        ).stdout
     )
     minio = config["services"]["minio"]["environment"]
     lakekeeper = config["services"]["lakekeeper"]["environment"]
-    ensure_bucket()
+    defaults = minio | {
+        "warehouse": lakekeeper["LAKEKEEPER_WAREHOUSE"],
+        "prefix": lakekeeper["ICEBERG_PREFIX"],
+    }
+    if args.delivery:
+        environment = config["services"]["delivery-job"]["environment"]
+        defaults = defaults | {
+            "MINIO_BUCKET": environment["S3_BUCKET"],
+            "warehouse": environment["PYICEBERG_CATALOG__DELIVERY__WAREHOUSE"],
+            "prefix": environment["DELIVERY_ICEBERG_PREFIX"],
+        }
+    bucket = args.bucket or defaults["MINIO_BUCKET"]
+    warehouse = args.warehouse or defaults["warehouse"]
+    prefix = args.prefix or defaults["prefix"]
+    ensure_bucket(bucket)
     ensure_warehouse(
         LAKEKEEPER_HOST_URL,
-        lakekeeper["LAKEKEEPER_WAREHOUSE"],
-        lakekeeper["ICEBERG_PREFIX"],
-        minio,
+        warehouse,
+        prefix,
+        {**defaults, "MINIO_BUCKET": bucket},
     )
 
 

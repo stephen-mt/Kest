@@ -1,0 +1,13 @@
+{
+  "contract_version": "1.0.0",
+  "rules": [
+    {"id": "shipment_pk", "severity": "error", "rule": "shipment_id is unique and not null"},
+    {"id": "event_business_key", "severity": "warn", "rule": "partner_event_id duplicates are deduplicated deterministically"},
+    {"id": "event_parent", "severity": "error", "rule": "deduplicated event resolves to a shipment or is quarantined"},
+    {"id": "event_clock", "severity": "warn", "rule": "event_at cannot exceed recorded_at by more than 15 minutes"},
+    {"id": "weight_unit", "severity": "error", "rule": "weight unit is be g or kg and normalize to grams"},
+    {"id": "money_parse", "severity": "error", "rule": "charge and refund amounts must parse and normalize to VND"},
+    {"id": "sla_terminal", "severity": "warn", "rule": "old shipments require a terminal state"},
+    {"id": "gold_reconciliation", "severity": "error", "rule": "Gold shipment totals reconcile to Silver at one batch watermark"}
+  ]
+}

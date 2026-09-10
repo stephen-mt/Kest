@@ -41,6 +41,18 @@ def ensure_parameter_context(
         (item for item in contexts if item["component"]["name"] == name), None
     )
     if existing:
+        actual = {
+            item["parameter"]["name"]: item["parameter"].get("value")
+            for item in existing["component"]["parameters"]
+            if not item["parameter"]["sensitive"]
+        }
+        desired = {
+            parameter_name: value
+            for parameter_name, (value, sensitive) in parameters.items()
+            if not sensitive
+        }
+        if actual != desired:
+            update_parameter_context(api, existing, parameters)
         return existing["id"]
 
     entity = api.post(
@@ -64,6 +76,54 @@ def ensure_parameter_context(
         },
     )
     return entity["id"]
+
+
+def update_parameter_context(
+    api: NifiClient,
+    entity: JsonObject,
+    parameters: dict[str, tuple[str, bool]],
+) -> None:
+    """Apply changed runtime values through NiFi's asynchronous update API."""
+    context_id = entity["id"]
+    response = api.post(
+        f"/parameter-contexts/{context_id}/update-requests",
+        {
+            "revision": entity["revision"],
+            "id": context_id,
+            "component": {
+                "id": context_id,
+                "name": entity["component"]["name"],
+                "description": entity["component"].get("description", ""),
+                "parameters": [
+                    {
+                        "parameter": {
+                            "name": parameter_name,
+                            "value": value,
+                            "sensitive": sensitive,
+                        }
+                    }
+                    for parameter_name, (value, sensitive) in parameters.items()
+                ],
+            },
+        },
+    )
+    request = response["request"]
+    request_id = request["requestId"]
+    try:
+        for _ in range(120):
+            current = api.get(
+                f"/parameter-contexts/{context_id}/update-requests/{request_id}"
+            )["request"]
+            if current["complete"]:
+                if current.get("failureReason"):
+                    raise RuntimeError(
+                        "NiFi parameter update failed: " + current["failureReason"]
+                    )
+                return
+            time.sleep(0.5)
+        raise RuntimeError("NiFi parameter update did not complete in time")
+    finally:
+        api.delete(f"/parameter-contexts/{context_id}/update-requests/{request_id}")
 
 
 class ComponentManager:

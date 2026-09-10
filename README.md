@@ -1,6 +1,6 @@
 # Kest local environment
 
-Local data-platform environment with three isolated PostgreSQL instances, MinIO,
+Local data-platform environment with isolated PostgreSQL instances, MinIO,
 Lakekeeper, RisingWave, Airflow, optional NiFi/Trino services and the optional CyberMarket workload. The
 workload includes reproducible Bronze history, committed raw CDC and a finite
 Silver/Gold Iceberg batch.
@@ -13,7 +13,8 @@ docker-compose.yml              Services, network, volumes and resource limits
 Makefile                        Start, stop, restart and logs
 docker/
   airflow/start.sh              Local UI credentials and standalone startup
-  airflow/dags/                 Manually triggered finite batch DAG
+  airflow/dags/                 TaskFlow DAGs
+  data-jobs/Dockerfile          Shared locked Python job runtime
   lakekeeper/bootstrap.py      Idempotent empty bucket/warehouse bootstrap
   nifi/
     bootstrap.py, check.py     Small flow lifecycle entry points
@@ -21,6 +22,7 @@ docker/
   trino/etc/                   Iceberg/PostgreSQL catalogs and bootstrap SQL
   risingwave/risingwave.toml    Small single-node storage/cache settings
 workload/                       CyberMarket generators, ingestion and transforms
+scenarios/delivery_ops/         Isolated logistics source, batch and streaming jobs
 ```
 
 ## Start
@@ -99,3 +101,14 @@ architecture and business rules, and [workload/README.md](workload/README.md) fo
 the concise object layout and commands. See
 [docs/NIFI_TRINO_USAGE.md](docs/NIFI_TRINO_USAGE.md) for source onboarding through
 NiFi/Debezium and shared SQL through Trino.
+
+## DeliveryOps end-to-end scenario
+
+DeliveryOps is a separate logistics source used to exercise PostgreSQL CDC,
+NiFi raw landing, RisingWave materialized views, Airflow TaskFlow jobs, DuckDB,
+Iceberg, Lakekeeper and Trino. It uses bucket `mini-cybet-delivery` and warehouse
+`delivery-ops`; its commands do not reset the CyberMarket workload.
+
+See [docs/DELIVERY_OPS_SCENARIO.md](docs/DELIVERY_OPS_SCENARIO.md) for the source
+schema, 24-task DAG, 35 Iceberg tables, business rules, runtime commands and the
+governance integration path.

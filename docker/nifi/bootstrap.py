@@ -3,17 +3,18 @@
 
 from kest_nifi.client import NifiClient
 from kest_nifi.flow import ensure_flow
-from kest_nifi.model import FLOW_NAME, FlowConfig
+from kest_nifi.model import FlowConfig
 
 
 def main() -> None:
-    action = ensure_flow(NifiClient(), FlowConfig.from_env())
+    config = FlowConfig.from_env()
+    action = ensure_flow(NifiClient(), config)
     messages = {
         "created": "Created and started NiFi flow",
         "upgraded": "Upgraded NiFi flow",
         "unchanged": "NiFi flow already exists",
     }
-    print(f"{messages[action]}: {FLOW_NAME}")
+    print(f"{messages[action]}: {config.flow_name}")
 
 
 if __name__ == "__main__":

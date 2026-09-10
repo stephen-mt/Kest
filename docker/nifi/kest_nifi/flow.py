@@ -6,10 +6,8 @@ from .client import JsonObject, NifiClient
 from .model import (
     CONNECTIONS,
     FAILURE,
-    FLOW_NAME,
     ICEBERG,
     INSPECTION_GROUP_NAME,
-    PARAMETER_CONTEXT_NAME,
     RAW,
     FlowConfig,
     ProcessorSpec,
@@ -23,10 +21,10 @@ def root_groups(api: NifiClient) -> tuple[str, list[JsonObject]]:
     return root["id"], root["flow"]["processGroups"]
 
 
-def find_flow(api: NifiClient) -> JsonObject | None:
+def find_flow(api: NifiClient, name: str) -> JsonObject | None:
     _, groups = root_groups(api)
     return next(
-        (group for group in groups if group["component"]["name"] == FLOW_NAME),
+        (group for group in groups if group["component"]["name"] == name),
         None,
     )
 
@@ -87,14 +85,17 @@ def create_controller_services(manager: ComponentManager) -> dict[str, str]:
 
 
 def create_process_group(
-    api: NifiClient, root_id: str, parameter_context_id: str
+    api: NifiClient,
+    root_id: str,
+    parameter_context_id: str,
+    flow_name: str,
 ) -> JsonObject:
     return api.post(
         f"/process-groups/{root_id}/process-groups",
         {
             "revision": {"version": 0},
             "component": {
-                "name": FLOW_NAME,
+                "name": flow_name,
                 "comments": "Git-managed flow: docker/nifi/bootstrap.py",
                 "position": {"x": 0, "y": 0},
                 "parameterContext": {"id": parameter_context_id},
@@ -107,9 +108,9 @@ def create_flow(api: NifiClient, config: FlowConfig) -> None:
     root_id, groups = root_groups(api)
     remove_inspection_groups(api, groups)
     parameter_context_id = ensure_parameter_context(
-        api, PARAMETER_CONTEXT_NAME, config.parameters()
+        api, config.parameter_context_name, config.parameters()
     )
-    group = create_process_group(api, root_id, parameter_context_id)
+    group = create_process_group(api, root_id, parameter_context_id, config.flow_name)
     manager = ComponentManager(api, group["id"])
     specs = processor_specs(create_controller_services(manager))
     processors = {spec.name: manager.create_processor(spec) for spec in specs}
@@ -162,8 +163,9 @@ def upgrade_flow(api: NifiClient, group: JsonObject) -> bool:
 def ensure_flow(api: NifiClient, config: FlowConfig) -> str:
     _, groups = root_groups(api)
     remove_inspection_groups(api, groups)
+    ensure_parameter_context(api, config.parameter_context_name, config.parameters())
     existing = next(
-        (group for group in groups if group["component"]["name"] == FLOW_NAME),
+        (group for group in groups if group["component"]["name"] == config.flow_name),
         None,
     )
     if existing:
