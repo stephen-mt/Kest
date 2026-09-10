@@ -1,9 +1,14 @@
-# Kest Local Environment
+# Đặc tả baseline hạ tầng dev ban đầu
 
 > Phase contract: this document specifies the infrastructure baseline only.
 > Workload components built on top of that baseline are described in
 > `workload/README.md`; the prohibitions below apply to infrastructure bootstrap,
 > not to the current repository as a whole.
+
+> Đây là requirements snapshot dùng để giải thích các quyết định bootstrap ban
+> đầu, không phải inventory của repo hiện tại. Trạng thái đang chạy được mô tả ở
+> [README.md](../README.md) và
+> [SOURCE_ONBOARDING_AND_PLATFORM_USAGE.md](SOURCE_ONBOARDING_AND_PLATFORM_USAGE.md).
 
 ## Scope
 

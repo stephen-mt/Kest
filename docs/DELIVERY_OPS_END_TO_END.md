@@ -250,7 +250,7 @@ chuyển sang OpenMetadata.
 Tham khảo chính thức:
 
 - [RisingWave PostgreSQL CDC](https://docs.risingwave.com/ingestion/sources/postgresql/pg-cdc)
-- [OpenLineage specification](https://openlineage.io/docs/spec/specification/)
+- [OpenLineage specification](https://openlineage.io/docs/spec/object-model)
 - [OpenMetadata Trino connector](https://docs.open-metadata.org/connectors/database/trino)
 - [OpenMetadata OpenLineage connector](https://docs.open-metadata.org/connectors/pipeline/openlineage)
 

@@ -79,10 +79,11 @@ Start the optional ingestion UI and shared SQL engine with `make platform-up`.
 After reviewing the CDC table allowlist, `make platform-cdc-up` also starts
 Debezium. Use `make platform-down` to stop all three optional services.
 
-The five named volumes preserve PostgreSQL, MinIO and RisingWave state. Airflow
-metadata lives in `postgres-airflow-data`; UI credentials are restored from `.env`.
-RisingWave's `[system]` storage sizes are set when its volume is first initialized.
-Container memory limits total 5.75 GiB; actual idle use is lower.
+Named volumes preserve PostgreSQL, MinIO, RisingWave, NiFi and Debezium state.
+Airflow metadata lives in `postgres-airflow-data`; UI credentials are restored
+from `.env`. RisingWave's `[system]` storage sizes are set when its volume is first
+initialized. Core container memory limits total 5.75 GiB; optional profiles add
+their own limits.
 
 ## CyberMarket workload
 
@@ -96,10 +97,10 @@ immutable versioned Silver/Gold namespaces through Lakekeeper, then atomically
 updates `iceberg/_kest_batches/current.json`. Consumers resolve namespaces from
 that pointer. RisingWave remains idle until a streaming phase needs it.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the current end-to-end
+See [docs/CYBERMARKET_END_TO_END.md](docs/CYBERMARKET_END_TO_END.md) for the current end-to-end
 architecture and business rules, and [workload/README.md](workload/README.md) for
 the concise object layout and commands. See
-[docs/NIFI_TRINO_USAGE.md](docs/NIFI_TRINO_USAGE.md) for source onboarding through
+[docs/NIFI_CDC_AND_TRINO_SQL.md](docs/NIFI_CDC_AND_TRINO_SQL.md) for source onboarding through
 NiFi/Debezium and shared SQL through Trino.
 
 ## DeliveryOps end-to-end scenario
@@ -109,6 +110,10 @@ NiFi raw landing, RisingWave materialized views, Airflow TaskFlow jobs, DuckDB,
 Iceberg, Lakekeeper and Trino. It uses bucket `mini-cybet-delivery` and warehouse
 `delivery-ops`; its commands do not reset the CyberMarket workload.
 
-See [docs/DELIVERY_OPS_SCENARIO.md](docs/DELIVERY_OPS_SCENARIO.md) for the source
+See [docs/DELIVERY_OPS_END_TO_END.md](docs/DELIVERY_OPS_END_TO_END.md) for the source
 schema, 24-task DAG, 35 Iceberg tables, business rules, runtime commands and the
 governance integration path.
+
+The documentation map is in [docs/README.md](docs/README.md). The production gap
+and target planes are described in
+[docs/DEV_TO_PRODUCTION_GUIDE.md](docs/DEV_TO_PRODUCTION_GUIDE.md).

@@ -1,4 +1,4 @@
-# Hướng dẫn sử dụng Kest như một data platform
+# Hướng dẫn sử dụng platform dev và thêm source mới
 
 Tài liệu này đánh giá Kest khi **không tính CyberMarket workload mẫu** và hướng
 dẫn cách đưa một source system mới vào nền tảng. Mục tiêu là trả lời rõ:
@@ -45,8 +45,9 @@ Vì vậy, ở trạng thái hiện tại:
 - MinIO Console dùng để quan sát object, không phải quy trình ingest.
 
 **Không cần lên production để thêm source.** Có thể phát triển và kiểm thử toàn
-bộ integration ở local. Chỉ cần thêm service khi source hoặc người dùng yêu cầu
-tiến trình luôn chạy, message broker, query server hoặc giao diện self-service.
+bộ integration ở local. Service mới chỉ cần thiết khi source hoặc người dùng yêu
+cầu tiến trình luôn chạy, message broker, governance catalog, BI hoặc giao diện
+self-service ngoài các profile hiện có.
 
 ## 2. Thành phần và trách nhiệm
 
@@ -60,7 +61,7 @@ flowchart LR
     LK[Lakekeeper<br/>Iceberg REST catalog]
     CAT[(PostgreSQL<br/>catalog metadata)]
     ENG[DuckDB / PyIceberg jobs]
-    QRY[Optional shared SQL engine]
+    QRY[Trino<br/>shared SQL engine]
     USER[Analyst / BI / downstream app]
 
     SRC --> ING
@@ -128,7 +129,10 @@ hiện tại.
 Analyst dùng Trino để query Iceberg bằng SQL hoặc JDBC sau khi data engineer
 publish table. Lakekeeper trả catalog metadata và hỗ trợ table access; nó không
 nhận SQL như database warehouse. Xem quy trình thao tác tại
-[NIFI_TRINO_USAGE.md](NIFI_TRINO_USAGE.md).
+[NIFI_CDC_AND_TRINO_SQL.md](NIFI_CDC_AND_TRINO_SQL.md).
+
+Một implementation đầy đủ để tham khảo nằm trong
+[DELIVERY_OPS_END_TO_END.md](DELIVERY_OPS_END_TO_END.md).
 
 ## 4. Quy trình chuẩn để thêm source
 

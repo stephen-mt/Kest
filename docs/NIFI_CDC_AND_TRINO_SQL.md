@@ -258,13 +258,19 @@ khác.
 
 ### 5.1 Catalog có sẵn
 
-Trino mở HTTP endpoint tại `http://127.0.0.1:8081` và có ba catalog:
+Trino mở HTTP endpoint tại `http://127.0.0.1:8081` và có năm catalog khi toàn bộ
+cấu hình hiện tại được nạp:
 
 | Catalog | Nội dung |
 | --- | --- |
 | `lakehouse` | Iceberg qua Lakekeeper, data file trong MinIO |
 | `source` | PostgreSQL `postgres-source` để kiểm tra/đối chiếu |
+| `delivery_lakehouse` | Iceberg của warehouse DeliveryOps |
+| `delivery` | PostgreSQL `postgres-delivery` khi scenario đang chạy |
 | `system` | Metadata/runtime của Trino |
+
+Hai catalog DeliveryOps luôn có file cấu hình nhưng source/warehouse chỉ truy cập
+được sau khi chạy `make delivery-up`.
 
 Mở Trino CLI trong container:
 

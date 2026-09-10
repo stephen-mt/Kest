@@ -1,16 +1,17 @@
-# Kiến trúc và luồng xử lý dữ liệu Kest
+# CyberMarket: kiến trúc và luồng xử lý end-to-end
 
-Tài liệu này mô tả trạng thái đang được triển khai trong repository: hạ tầng local,
-mô hình CyberMarket, đường đi của dữ liệu và các bảo đảm khi chạy CDC hoặc batch.
-Các thành phần được mô tả ở đây đều đã có code và lệnh vận hành tương ứng.
+Tài liệu này chỉ mô tả data product CyberMarket trên hạ tầng Kest: mô hình nguồn,
+đường đi của dữ liệu và các bảo đảm khi chạy CDC hoặc batch. Các thành phần được
+mô tả ở đây đều đã có code và lệnh vận hành tương ứng. DeliveryOps được mô tả
+riêng trong [DELIVERY_OPS_END_TO_END.md](DELIVERY_OPS_END_TO_END.md).
 
 ## 1. Phạm vi hiện tại
 
 Kest mô phỏng một nền tảng dữ liệu local theo kiến trúc lakehouse. PostgreSQL là
 nguồn giao dịch, MinIO giữ raw/Parquet/Iceberg, Lakekeeper quản lý Iceberg REST
 catalog, DuckDB thực hiện batch transform và Airflow điều phối batch thủ công.
-RisingWave đã có trong hạ tầng để dùng cho streaming ở giai đoạn sau nhưng chưa
-tham gia vào đường xử lý batch hiện tại.
+RisingWave chưa tham gia vào riêng pipeline CyberMarket. DeliveryOps đã dùng
+RisingWave cho operational materialized views.
 
 Hệ thống có bốn vùng dữ liệu:
 
