@@ -1,0 +1,188 @@
+name: kest
+
+x-delivery-common: &delivery-common
+  networks: [kest-net]
+  profiles: [delivery]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "2"
+
+x-delivery-job-env: &delivery-job-env
+  PGHOST: postgres-delivery
+  PGPORT: "5432"
+  PGDATABASE: ${DELIVERY_POSTGRES_DB:?}
+  PGUSER: ${DELIVERY_POSTGRES_USER:?}
+  PGPASSWORD: ${DELIVERY_POSTGRES_PASSWORD:?}
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+  AWS_DEFAULT_REGION: us-east-1
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: ${DELIVERY_MINIO_BUCKET:-mini-cybet-delivery}
+  DELIVERY_RANDOM_SEED: ${DELIVERY_RANDOM_SEED:-20260910}
+  DELIVERY_SHIPMENT_COUNT: ${DELIVERY_SHIPMENT_COUNT:-25000}
+  DELIVERY_BATCH_MEMORY: ${DELIVERY_BATCH_MEMORY:-1GB}
+  DELIVERY_ICEBERG_PREFIX: ${DELIVERY_ICEBERG_PREFIX:-iceberg/delivery_ops}
+  RISINGWAVE_HOST: risingwave
+  RISINGWAVE_PORT: "4566"
+  RISINGWAVE_DATABASE: dev
+  RISINGWAVE_USER: root
+  ICEBERG_CATALOG: delivery
+  PYICEBERG_CATALOG__DELIVERY__TYPE: rest
+  PYICEBERG_CATALOG__DELIVERY__URI: http://lakekeeper:8181/catalog
+  PYICEBERG_CATALOG__DELIVERY__WAREHOUSE: ${DELIVERY_LAKEKEEPER_WAREHOUSE:-delivery-ops}
+  PYICEBERG_CATALOG__DELIVERY__S3__ENDPOINT: http://minio:9000
+  PYICEBERG_CATALOG__DELIVERY__S3__ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+  PYICEBERG_CATALOG__DELIVERY__S3__SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+  PYICEBERG_CATALOG__DELIVERY__S3__PATH_STYLE_ACCESS: "true"
+  PYICEBERG_CATALOG__DELIVERY__S3__REGION: us-east-1
+
+services:
+  postgres-delivery:
+    <<: *delivery-common
+    image: ${POSTGRES_SOURCE_IMAGE:?}
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.75
+    shm_size: 96m
+    environment:
+      POSTGRES_DB: ${DELIVERY_POSTGRES_DB:?}
+      POSTGRES_USER: ${DELIVERY_POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${DELIVERY_POSTGRES_PASSWORD:?}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=96MB
+      - -c
+      - max_connections=30
+      - -c
+      - work_mem=4MB
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=4
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_slot_wal_keep_size=512MB
+    volumes:
+      - postgres-delivery-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  delivery-job:
+    <<: *delivery-common
+    image: kest/delivery-job:local
+    build:
+      context: .
+      dockerfile: deploy/local/services/delivery-job/Dockerfile
+    mem_limit: 2048m
+    cpus: 2.0
+    working_dir: /opt/kest
+    environment:
+      <<: *delivery-job-env
+      PYTHONPATH: /opt/kest/src:/opt/kest
+    volumes:
+      - ./src:/opt/kest/src:ro,Z
+      - ./workloads:/opt/kest/workloads:ro,Z
+    depends_on:
+      postgres-delivery:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      lakekeeper:
+        condition: service_healthy
+      risingwave:
+        condition: service_healthy
+
+  debezium-delivery:
+    <<: *delivery-common
+    profiles: [delivery-cdc]
+    image: ${DEBEZIUM_SERVER_IMAGE:?}
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 1.0
+    environment:
+      JAVA_OPTS: -Xms256m -Xmx640m -XX:ActiveProcessorCount=1
+      DEBEZIUM_SINK_TYPE: http
+      DEBEZIUM_SINK_HTTP_URL: http://nifi:9091/cdc/delivery-ops
+      DEBEZIUM_SINK_HTTP_TIMEOUT_MS: "30000"
+      DEBEZIUM_SINK_HTTP_RETRIES: "5"
+      DEBEZIUM_SINK_HTTP_RETRY_INTERVAL_MS: "1000"
+      DEBEZIUM_SINK_HTTP_BATCH_ENABLED: "false"
+      DEBEZIUM_SOURCE_CONNECTOR_CLASS: io.debezium.connector.postgresql.PostgresConnector
+      DEBEZIUM_SOURCE_DATABASE_HOSTNAME: postgres-delivery
+      DEBEZIUM_SOURCE_DATABASE_PORT: "5432"
+      DEBEZIUM_SOURCE_DATABASE_USER: ${DELIVERY_POSTGRES_USER:?}
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${DELIVERY_POSTGRES_PASSWORD:?}
+      DEBEZIUM_SOURCE_DATABASE_DBNAME: ${DELIVERY_POSTGRES_DB:?}
+      DEBEZIUM_SOURCE_TOPIC_PREFIX: delivery-ops
+      DEBEZIUM_SOURCE_PLUGIN_NAME: pgoutput
+      DEBEZIUM_SOURCE_SLOT_NAME: kest_delivery_nifi
+      DEBEZIUM_SOURCE_PUBLICATION_NAME: kest_delivery_nifi
+      DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE: filtered
+      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: public.shipments,public.shipment_events,public.delivery_attempts,public.charges,public.refunds
+      DEBEZIUM_SOURCE_SNAPSHOT_MODE: no_data
+      DEBEZIUM_SOURCE_OFFSET_STORAGE: org.apache.kafka.connect.storage.FileOffsetBackingStore
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
+      DEBEZIUM_SOURCE_OFFSET_FLUSH_INTERVAL_MS: "1000"
+      DEBEZIUM_SOURCE_SCHEMA_HISTORY_INTERNAL: io.debezium.storage.file.history.FileSchemaHistory
+      DEBEZIUM_SOURCE_SCHEMA_HISTORY_INTERNAL_FILE_FILENAME: /debezium/data/schema-history.dat
+      DEBEZIUM_FORMAT_KEY: json
+      DEBEZIUM_FORMAT_KEY_SCHEMAS_ENABLE: "false"
+      DEBEZIUM_FORMAT_VALUE: json
+      DEBEZIUM_FORMAT_VALUE_SCHEMAS_ENABLE: "false"
+    volumes:
+      - debezium-delivery-data:/debezium/data
+    depends_on:
+      postgres-delivery:
+        condition: service_healthy
+      nifi:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8080/q/health/ready]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+
+  trino:
+    environment:
+      DELIVERY_POSTGRES_DB: ${DELIVERY_POSTGRES_DB:?}
+      DELIVERY_POSTGRES_USER: ${DELIVERY_POSTGRES_USER:?}
+      DELIVERY_POSTGRES_PASSWORD: ${DELIVERY_POSTGRES_PASSWORD:?}
+      DELIVERY_LAKEKEEPER_WAREHOUSE: ${DELIVERY_LAKEKEEPER_WAREHOUSE:-delivery-ops}
+
+  nifi:
+    environment:
+      NIFI_FLOW_NAME: Kest CDC - delivery-ops v1
+      NIFI_PARAMETER_CONTEXT_NAME: Kest CDC delivery-ops local
+      INGESTION_SOURCE_NAME: delivery-ops
+      INGESTION_HTTP_PATH: cdc/delivery-ops
+      NIFI_LISTENER_PORT: "9091"
+      NIFI_BRONZE_NAMESPACE: bronze_delivery
+      NIFI_BRONZE_TABLE: cdc_events
+      DELIVERY_MINIO_BUCKET: ${DELIVERY_MINIO_BUCKET:-mini-cybet-delivery}
+      DELIVERY_LAKEKEEPER_WAREHOUSE: ${DELIVERY_LAKEKEEPER_WAREHOUSE:-delivery-ops}
+    depends_on:
+      postgres-delivery:
+        condition: service_healthy
+
+  airflow:
+    environment:
+      <<: *delivery-job-env
+      PYTHONPATH: /opt/kest/src:/opt/kest
+    depends_on:
+      postgres-delivery:
+        condition: service_healthy
+
+volumes:
+  postgres-delivery-data:
+    name: postgres-delivery-data
+  debezium-delivery-data:
+    name: debezium-delivery-data

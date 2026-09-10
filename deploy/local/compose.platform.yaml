@@ -1,0 +1,144 @@
+name: kest
+
+x-platform-common: &platform-common
+  restart: unless-stopped
+  networks: [kest-net]
+  profiles: [platform]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "2"
+
+services:
+  nifi:
+    <<: *platform-common
+    image: ${NIFI_IMAGE:?Set NIFI_IMAGE in .env}
+    mem_limit: 1536m
+    cpus: 1.5
+    environment:
+      SINGLE_USER_CREDENTIALS_USERNAME: ${NIFI_USERNAME:?}
+      SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_PASSWORD:?}
+      NIFI_WEB_HTTPS_HOST: 0.0.0.0
+      NIFI_WEB_PROXY_HOST: 127.0.0.1:8090,localhost:8090
+      NIFI_JVM_HEAP_INIT: 512m
+      NIFI_JVM_HEAP_MAX: 1024m
+      NIFI_SENSITIVE_PROPS_KEY: ${NIFI_SENSITIVE_PROPS_KEY:?}
+      INGESTION_SOURCE_NAME: ${INGESTION_SOURCE_NAME:-postgres-source}
+      INGESTION_HTTP_PATH: ${INGESTION_HTTP_PATH:-cdc/postgres-source}
+      NIFI_LISTENER_PORT: ${NIFI_LISTENER_PORT:-9090}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MINIO_BUCKET: ${MINIO_BUCKET:?}
+      LAKEKEEPER_WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
+    ports:
+      - 127.0.0.1:8090:8443
+    volumes:
+      - nifi-database:/opt/nifi/nifi-current/database_repository
+      - nifi-flowfile:/opt/nifi/nifi-current/flowfile_repository
+      - nifi-content:/opt/nifi/nifi-current/content_repository
+      - nifi-provenance:/opt/nifi/nifi-current/provenance_repository
+      - nifi-state:/opt/nifi/nifi-current/state
+      - ./deploy/local/services/nifi:/opt/kest/nifi:ro,Z
+    healthcheck:
+      test: [CMD, /opt/nifi/nifi-current/bin/nifi.sh, status]
+      interval: 20s
+      timeout: 10s
+      retries: 12
+      start_period: 120s
+
+  debezium-postgres:
+    <<: *platform-common
+    image: ${DEBEZIUM_SERVER_IMAGE:?Set DEBEZIUM_SERVER_IMAGE in .env}
+    mem_limit: 1024m
+    cpus: 1.0
+    environment:
+      JAVA_OPTS: -Xms256m -Xmx640m -XX:ActiveProcessorCount=1
+      DEBEZIUM_SINK_TYPE: http
+      DEBEZIUM_SINK_HTTP_URL: http://nifi:${NIFI_LISTENER_PORT:-9090}/${INGESTION_HTTP_PATH:-cdc/postgres-source}
+      DEBEZIUM_SINK_HTTP_TIMEOUT_MS: "30000"
+      DEBEZIUM_SINK_HTTP_RETRIES: "5"
+      DEBEZIUM_SINK_HTTP_RETRY_INTERVAL_MS: "1000"
+      DEBEZIUM_SINK_HTTP_BATCH_ENABLED: "false"
+      DEBEZIUM_SOURCE_CONNECTOR_CLASS: io.debezium.connector.postgresql.PostgresConnector
+      DEBEZIUM_SOURCE_DATABASE_HOSTNAME: ${DEBEZIUM_DATABASE_HOSTNAME:-postgres-source}
+      DEBEZIUM_SOURCE_DATABASE_PORT: ${DEBEZIUM_DATABASE_PORT:-5432}
+      DEBEZIUM_SOURCE_DATABASE_USER: ${POSTGRES_SOURCE_USER:?}
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${POSTGRES_SOURCE_PASSWORD:?}
+      DEBEZIUM_SOURCE_DATABASE_DBNAME: ${POSTGRES_SOURCE_DB:?}
+      DEBEZIUM_SOURCE_TOPIC_PREFIX: ${DEBEZIUM_TOPIC_PREFIX:-kest-postgres}
+      DEBEZIUM_SOURCE_PLUGIN_NAME: pgoutput
+      DEBEZIUM_SOURCE_SLOT_NAME: ${DEBEZIUM_SLOT_NAME:-kest_nifi}
+      DEBEZIUM_SOURCE_PUBLICATION_NAME: ${DEBEZIUM_PUBLICATION_NAME:-kest_nifi}
+      DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE: filtered
+      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: ${DEBEZIUM_TABLE_INCLUDE_LIST:-ingestion_demo.cdc_probe}
+      DEBEZIUM_SOURCE_SNAPSHOT_MODE: initial
+      DEBEZIUM_SOURCE_OFFSET_STORAGE: org.apache.kafka.connect.storage.FileOffsetBackingStore
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
+      DEBEZIUM_SOURCE_OFFSET_FLUSH_INTERVAL_MS: "1000"
+      DEBEZIUM_SOURCE_SCHEMA_HISTORY_INTERNAL: io.debezium.storage.file.history.FileSchemaHistory
+      DEBEZIUM_SOURCE_SCHEMA_HISTORY_INTERNAL_FILE_FILENAME: /debezium/data/schema-history.dat
+      DEBEZIUM_FORMAT_KEY: json
+      DEBEZIUM_FORMAT_KEY_SCHEMAS_ENABLE: "false"
+      DEBEZIUM_FORMAT_VALUE: json
+      DEBEZIUM_FORMAT_VALUE_SCHEMAS_ENABLE: "false"
+      QUARKUS_HTTP_PORT: "8080"
+    volumes:
+      - debezium-postgres-data:/debezium/data
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      nifi:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8080/q/health/ready]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 60s
+
+  trino:
+    <<: *platform-common
+    image: ${TRINO_IMAGE:?Set TRINO_IMAGE in .env}
+    mem_limit: 1280m
+    cpus: 1.5
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      POSTGRES_SOURCE_DB: ${POSTGRES_SOURCE_DB:?}
+      POSTGRES_SOURCE_USER: ${POSTGRES_SOURCE_USER:?}
+      POSTGRES_SOURCE_PASSWORD: ${POSTGRES_SOURCE_PASSWORD:?}
+      DELIVERY_POSTGRES_DB: ${DELIVERY_POSTGRES_DB:-delivery_ops}
+      DELIVERY_POSTGRES_USER: ${DELIVERY_POSTGRES_USER:-delivery_ops}
+      DELIVERY_POSTGRES_PASSWORD: ${DELIVERY_POSTGRES_PASSWORD:-delivery_local_unconfigured}
+      DELIVERY_LAKEKEEPER_WAREHOUSE: ${DELIVERY_LAKEKEEPER_WAREHOUSE:-delivery-ops}
+      LAKEKEEPER_WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
+    ports:
+      - 127.0.0.1:8081:8080
+    volumes:
+      - ./deploy/local/services/trino/etc:/etc/trino:ro,Z
+    depends_on:
+      lakekeeper:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /usr/lib/trino/bin/health-check]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+
+volumes:
+  nifi-database:
+    name: nifi-database
+  nifi-flowfile:
+    name: nifi-flowfile
+  nifi-content:
+    name: nifi-content
+  nifi-provenance:
+    name: nifi-provenance
+  nifi-state:
+    name: nifi-state
+  debezium-postgres-data:
+    name: debezium-postgres-data

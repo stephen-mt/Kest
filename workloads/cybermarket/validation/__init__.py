@@ -1,0 +1,1 @@
+"""CyberMarket lifecycle validation."""

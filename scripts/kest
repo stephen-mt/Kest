@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+command="${1:-help}"
+
+case "$command" in
+  doctor|config|env|lint|test|check|up|down|restart|status|logs|demo|demo-full)
+    shift || true
+    exec make -C "$repo_root" "$command" "$@"
+    ;;
+  help|-h|--help)
+    cat <<'EOF'
+Usage: ./scripts/kest <command>
+
+  doctor     Check local prerequisites and configuration
+  demo       Start Kest and publish a small CyberMarket dataset
+  demo-full  Generate the full CyberMarket fixture and publish it
+  up         Start the core platform
+  down       Stop every Kest service and retain its data
+  status     Show all Kest containers
+  logs       Follow logs from the local stack
+  env        Create a locked host Python environment
+  check      Validate Compose, formatting, lint, and unit tests
+  config     Validate all Compose models
+  lint       Check Python formatting and imports
+  test       Run unit tests in the locked job image
+EOF
+    ;;
+  *)
+    echo "Unknown command: $command" >&2
+    echo "Run ./scripts/kest help for the supported commands." >&2
+    exit 2
+    ;;
+esac

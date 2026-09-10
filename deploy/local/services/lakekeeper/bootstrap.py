@@ -1,0 +1,184 @@
+"""Initialize a MinIO bucket and its Lakekeeper warehouse."""
+
+import argparse
+import json
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+PROJECT_ROOT = next(
+    parent
+    for parent in Path(__file__).resolve().parents
+    if (parent / "Makefile").is_file()
+)
+LAKEKEEPER_HOST_URL = "http://127.0.0.1:8181"
+
+
+def compose(*args, **kwargs):
+    return subprocess.run(
+        ["docker", "compose", *args],
+        cwd=PROJECT_ROOT,
+        check=True,
+        text=True,
+        **kwargs,
+    )
+
+
+def request_json(base_url, path, payload=None, method=None):
+    request = urllib.request.Request(
+        base_url + path,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = response.read()
+            return json.loads(body) if body else None
+    except urllib.error.HTTPError as exc:
+        # A server error body might contain credentials; report only its status.
+        raise SystemExit(
+            f"Lakekeeper bootstrap failed: {path} returned HTTP {exc.code}"
+        ) from None
+    except urllib.error.URLError:
+        raise SystemExit(
+            "Lakekeeper is unreachable; check its health and logs."
+        ) from None
+
+
+def ensure_bucket(bucket):
+    compose(
+        "exec",
+        "-T",
+        "-e",
+        f"KEST_BOOTSTRAP_BUCKET={bucket}",
+        "minio",
+        "sh",
+        "-ec",
+        "mc alias set kest-local http://127.0.0.1:9000 "
+        '"$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null; '
+        'mc mb --ignore-existing "kest-local/$KEST_BOOTSTRAP_BUCKET" >/dev/null; '
+        'mc version enable "kest-local/$KEST_BOOTSTRAP_BUCKET" >/dev/null',
+    )
+
+
+def ensure_warehouse(base_url, name, iceberg_prefix, minio):
+    info = request_json(base_url, "/management/v1/info")
+    if not info["bootstrapped"]:
+        request_json(
+            base_url, "/management/v1/bootstrap", {"accept-terms-of-use": True}
+        )
+        info = request_json(base_url, "/management/v1/info")
+
+    project_id = info["default-project-id"]
+    profile = {
+        "type": "s3",
+        "bucket": minio["MINIO_BUCKET"],
+        "key-prefix": iceberg_prefix,
+        "endpoint": "http://minio:9000/",
+        "region": "us-east-1",
+        "path-style-access": True,
+        "flavor": "s3-compat",
+        "sts-enabled": False,
+    }
+    query = urllib.parse.urlencode({"project-id": project_id})
+    warehouses = request_json(base_url, f"/management/v1/warehouse?{query}")[
+        "warehouses"
+    ]
+    existing = next(
+        (warehouse for warehouse in warehouses if warehouse["name"] == name), None
+    )
+    if existing:
+        actual = existing["storage-profile"]
+        if any(actual.get(key) != value for key, value in profile.items()):
+            warehouse_id = existing["warehouse-id"]
+            namespaces = request_json(
+                base_url, f"/catalog/v1/{warehouse_id}/namespaces"
+            )["namespaces"]
+            if namespaces:
+                raise SystemExit(
+                    "Existing warehouse storage differs from .env and contains namespaces; "
+                    "refusing to replace it."
+                )
+            request_json(
+                base_url,
+                f"/management/v1/warehouse/{warehouse_id}",
+                method="DELETE",
+            )
+            existing = None
+            print(f"Replaced empty Lakekeeper warehouse {name} storage profile.")
+        else:
+            print(f"Lakekeeper warehouse {name} already configured; preserved.")
+            return
+
+    request_json(
+        base_url,
+        "/management/v1/warehouse",
+        {
+            "warehouse-name": name,
+            "project-id": project_id,
+            "storage-profile": profile,
+            "storage-credential": {
+                "type": "s3",
+                "credential-type": "access-key",
+                "access-key-id": minio["MINIO_ROOT_USER"],
+                "secret-access-key": minio["MINIO_ROOT_PASSWORD"],
+            },
+        },
+    )
+    print(f"Created empty Lakekeeper warehouse {name} backed by MinIO.")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--delivery", action="store_true")
+    parser.add_argument("--bucket")
+    parser.add_argument("--warehouse")
+    parser.add_argument("--prefix")
+    args = parser.parse_args()
+    compose_files = ("-f", "deploy/local/compose.yaml")
+    if args.delivery:
+        compose_files = (
+            "-f",
+            "deploy/local/compose.yaml",
+            "-f",
+            "deploy/local/compose.platform.yaml",
+            "-f",
+            "deploy/local/compose.delivery-ops.yaml",
+            "--profile",
+            "delivery",
+        )
+    config = json.loads(
+        compose(
+            *compose_files, "config", "--format", "json", capture_output=True
+        ).stdout
+    )
+    minio = config["services"]["minio"]["environment"]
+    lakekeeper = config["services"]["lakekeeper"]["environment"]
+    defaults = minio | {
+        "warehouse": lakekeeper["LAKEKEEPER_WAREHOUSE"],
+        "prefix": lakekeeper["ICEBERG_PREFIX"],
+    }
+    if args.delivery:
+        environment = config["services"]["delivery-job"]["environment"]
+        defaults = defaults | {
+            "MINIO_BUCKET": environment["S3_BUCKET"],
+            "warehouse": environment["PYICEBERG_CATALOG__DELIVERY__WAREHOUSE"],
+            "prefix": environment["DELIVERY_ICEBERG_PREFIX"],
+        }
+    bucket = args.bucket or defaults["MINIO_BUCKET"]
+    warehouse = args.warehouse or defaults["warehouse"]
+    prefix = args.prefix or defaults["prefix"]
+    ensure_bucket(bucket)
+    ensure_warehouse(
+        LAKEKEEPER_HOST_URL,
+        warehouse,
+        prefix,
+        {**defaults, "MINIO_BUCKET": bucket},
+    )
+
+
+if __name__ == "__main__":
+    main()

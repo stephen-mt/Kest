@@ -1,0 +1,291 @@
+name: kest
+
+x-common: &common
+  restart: unless-stopped
+  networks: [kest-net]
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "2"
+
+x-postgres: &postgres
+  <<: *common
+  mem_limit: 256m
+  cpus: 0.5
+  shm_size: 64m
+  command:
+    - postgres
+    - -c
+    - shared_buffers=64MB
+    - -c
+    - max_connections=40
+    - -c
+    - work_mem=2MB
+    - -c
+    - maintenance_work_mem=32MB
+    - -c
+    - max_parallel_workers=0
+  healthcheck:
+    test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 30s
+
+services:
+  postgres-source:
+    <<: *postgres
+    image: kest/postgres-source:16-wal2json
+    build:
+      context: .
+      dockerfile: deploy/local/services/postgres-source/Dockerfile
+      args:
+        POSTGRES_SOURCE_IMAGE: ${POSTGRES_SOURCE_IMAGE:?Set POSTGRES_SOURCE_IMAGE in .env}
+    mem_limit: 384m
+    environment:
+      POSTGRES_DB: ${POSTGRES_SOURCE_DB:?}
+      POSTGRES_USER: ${POSTGRES_SOURCE_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_SOURCE_PASSWORD:?}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=30
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_parallel_workers=0
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=4
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_slot_wal_keep_size=1GB
+      - -c
+      - output_plugin_libraries=wal2json,pgoutput
+    volumes:
+      - postgres-source-data:/var/lib/postgresql/data
+
+  postgres-airflow:
+    <<: *postgres
+    image: ${POSTGRES_AIRFLOW_IMAGE:?}
+    environment:
+      POSTGRES_DB: ${POSTGRES_AIRFLOW_DB:?}
+      POSTGRES_USER: ${POSTGRES_AIRFLOW_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_AIRFLOW_PASSWORD:?}
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+
+  postgres-catalog:
+    <<: *postgres
+    image: ${POSTGRES_CATALOG_IMAGE:?}
+    environment:
+      POSTGRES_DB: ${POSTGRES_CATALOG_DB:?}
+      POSTGRES_USER: ${POSTGRES_CATALOG_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_CATALOG_PASSWORD:?}
+    volumes:
+      - postgres-catalog-data:/var/lib/postgresql/data
+
+  minio:
+    <<: *common
+    image: ${MINIO_IMAGE:?}
+    mem_limit: 384m
+    cpus: 0.5
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MINIO_BUCKET: ${MINIO_BUCKET:?}
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 256MiB
+    command: [server, /data, --console-address, ':9001']
+    ports:
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:9000/minio/health/ready]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  lakekeeper:
+    <<: *common
+    image: ${LAKEKEEPER_IMAGE:?}
+    mem_limit: 512m
+    cpus: 1.0
+    environment:
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://${POSTGRES_CATALOG_USER}:${POSTGRES_CATALOG_PASSWORD}@postgres-catalog:5432/${POSTGRES_CATALOG_DB}
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://${POSTGRES_CATALOG_USER}:${POSTGRES_CATALOG_PASSWORD}@postgres-catalog:5432/${POSTGRES_CATALOG_DB}
+      LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_PG_ENCRYPTION_KEY:?}
+      LAKEKEEPER__PG_READ_POOL_CONNECTIONS: "3"
+      LAKEKEEPER__PG_WRITE_POOL_CONNECTIONS: "3"
+      LAKEKEEPER__AUTHZ_BACKEND: allowall
+      LAKEKEEPER__BASE_URI: http://lakekeeper:8181
+      LAKEKEEPER__UI__LAKEKEEPER_URL: http://127.0.0.1:8181
+      LAKEKEEPER_WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
+      ICEBERG_PREFIX: ${ICEBERG_PREFIX:-iceberg}
+      TOKIO_WORKER_THREADS: "2"
+      RUST_LOG: info
+    command: [serve]
+    ports:
+      - 127.0.0.1:8181:8181
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, /home/nonroot/lakekeeper, healthcheck]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  risingwave:
+    <<: *common
+    image: ${RISINGWAVE_IMAGE:?}
+    mem_limit: 1536m
+    cpus: 1.0
+    environment:
+      RUST_LOG: warn
+      TOKIO_WORKER_THREADS: "4"
+      RAYON_NUM_THREADS: "1"
+      ENABLE_TELEMETRY: "false"
+      RW_COMPACTOR_META_CACHE_MEMORY_BYTES: "16777216"
+      JAVA_TOOL_OPTIONS: -Xms32m -Xmx128m -XX:ActiveProcessorCount=1
+    command:
+      - single_node
+      - --config-path
+      - /etc/risingwave.toml
+      - --store-directory
+      - /var/lib/risingwave
+      - --listen-addr
+      - 0.0.0.0:4566
+      - --total-memory-bytes
+      - ${RISINGWAVE_TOTAL_MEMORY_BYTES:?}
+      - --parallelism
+      - ${RISINGWAVE_PARALLELISM:?}
+      - --compaction-worker-threads-number
+      - "1"
+    ports:
+      - 127.0.0.1:4566:4566
+    volumes:
+      - risingwave-data:/var/lib/risingwave
+      - ./deploy/local/services/risingwave/risingwave.toml:/etc/risingwave.toml:ro,Z
+    healthcheck:
+      test: [CMD, bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/4566']
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  airflow:
+    <<: *common
+    image: kest/airflow:3.3.0-local
+    build:
+      context: .
+      dockerfile: deploy/local/services/airflow/Dockerfile
+      args:
+        AIRFLOW_IMAGE: ${AIRFLOW_IMAGE:?}
+    mem_limit: 2560m
+    cpus: 1.5
+    stop_grace_period: 60s
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_AIRFLOW_USER}:${POSTGRES_AIRFLOW_PASSWORD}@postgres-airflow:5432/${POSTGRES_AIRFLOW_DB}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: "2"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW: "1"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__PARALLELISM: "1"
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+      AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?}
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_ADMIN_USER:?}:admin
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
+      AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?}
+      AIRFLOW__API__WORKERS: "1"
+      AIRFLOW__API__BASE_URL: http://127.0.0.1:8080
+      AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "1"
+      AIRFLOW__DAG_PROCESSOR__MIN_FILE_PROCESS_INTERVAL: "60"
+      AIRFLOW__SCHEDULER__SCHEDULER_IDLE_SLEEP_TIME: "5"
+      AIRFLOW__TRIGGERER__DEFAULT_CAPACITY: "10"
+      AIRFLOW__METRICS__STATSD_ON: "false"
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://127.0.0.1:8080/execution/
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:?}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?}
+      PGHOST: postgres-source
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_SOURCE_DB:?}
+      PGUSER: ${POSTGRES_SOURCE_USER:?}
+      PGPASSWORD: ${POSTGRES_SOURCE_PASSWORD:?}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: ${MINIO_BUCKET:?}
+      BRONZE_PREFIX: ${BRONZE_PREFIX:-bronze/history}
+      ICEBERG_PREFIX: ${ICEBERG_PREFIX:-iceberg}
+      ICEBERG_CATALOG: kest
+      SILVER_NAMESPACE: ${SILVER_NAMESPACE:-silver}
+      GOLD_NAMESPACE: ${GOLD_NAMESPACE:-gold}
+      BATCH_DUCKDB_MEMORY: ${BATCH_DUCKDB_MEMORY:-1GB}
+      PYICEBERG_CATALOG__KEST__TYPE: rest
+      PYICEBERG_CATALOG__KEST__URI: http://lakekeeper:8181/catalog
+      PYICEBERG_CATALOG__KEST__WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
+      PYICEBERG_CATALOG__KEST__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__KEST__S3__ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      PYICEBERG_CATALOG__KEST__S3__SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      PYICEBERG_CATALOG__KEST__S3__PATH_STYLE_ACCESS: "true"
+      PYICEBERG_CATALOG__KEST__S3__REGION: us-east-1
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      PYTHONPATH: /opt/kest/src:/opt/kest
+    command: [bash, /opt/kest/airflow-start.sh]
+    volumes:
+      - ./deploy/local/services/airflow/start.sh:/opt/kest/airflow-start.sh:ro,Z
+      - ./orchestration/airflow/dags:/opt/airflow/dags:ro,Z
+      - ./src:/opt/kest/src:ro,Z
+      - ./workloads:/opt/kest/workloads:ro,Z
+    ports:
+      - 127.0.0.1:8080:8080
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          h = json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/v2/monitor/health', timeout=5));
+          assert all(h[k]['status'] == 'healthy' for k in ('metadatabase', 'scheduler', 'dag_processor', 'triggerer')), h
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+
+networks:
+  kest-net:
+    name: kest-net
+    driver: bridge
+
+volumes:
+  postgres-source-data:
+    name: postgres-source-data
+  postgres-airflow-data:
+    name: postgres-airflow-data
+  postgres-catalog-data:
+    name: postgres-catalog-data
+  minio-data:
+    name: minio-data
+  risingwave-data:
+    name: risingwave-data

@@ -1,0 +1,53 @@
+services:
+  cybermarket-job:
+    image: kest/cybermarket-job:local
+    build:
+      context: .
+      dockerfile: deploy/local/services/cybermarket-job/Dockerfile
+    profiles: [cybermarket]
+    networks: [kest-net]
+    mem_limit: 1536m
+    cpus: 2.0
+    working_dir: /opt/kest
+    environment:
+      PYTHONPATH: /opt/kest/src:/opt/kest
+      PGHOST: postgres-source
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_SOURCE_DB:?}
+      PGUSER: ${POSTGRES_SOURCE_USER:?}
+      PGPASSWORD: ${POSTGRES_SOURCE_PASSWORD:?}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      AWS_DEFAULT_REGION: us-east-1
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: ${MINIO_BUCKET:?}
+      WORKLOAD_EVENT_RATE: ${WORKLOAD_EVENT_RATE:-20}
+      WORKLOAD_RANDOM_SEED: ${WORKLOAD_RANDOM_SEED:-20260909}
+      CDC_SLOT_NAME: ${CDC_SLOT_NAME:-kest_landing}
+      CDC_BATCH_SIZE: ${CDC_BATCH_SIZE:-500}
+      CDC_POLL_INTERVAL_SECONDS: ${CDC_POLL_INTERVAL_SECONDS:-1}
+      CDC_LANDING_PREFIX: ${CDC_LANDING_PREFIX:-landing/postgres-source}
+      BRONZE_PREFIX: ${BRONZE_PREFIX:-bronze/history}
+      BRONZE_TARGET_BYTES: ${BRONZE_TARGET_BYTES:-5368709120}
+      ICEBERG_PREFIX: ${ICEBERG_PREFIX:-iceberg}
+      ICEBERG_CATALOG: kest
+      SILVER_NAMESPACE: ${SILVER_NAMESPACE:-silver}
+      GOLD_NAMESPACE: ${GOLD_NAMESPACE:-gold}
+      BATCH_DUCKDB_MEMORY: ${BATCH_DUCKDB_MEMORY:-1GB}
+      PYICEBERG_CATALOG__KEST__TYPE: rest
+      PYICEBERG_CATALOG__KEST__URI: http://lakekeeper:8181/catalog
+      PYICEBERG_CATALOG__KEST__WAREHOUSE: ${LAKEKEEPER_WAREHOUSE:?}
+      PYICEBERG_CATALOG__KEST__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__KEST__S3__ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      PYICEBERG_CATALOG__KEST__S3__SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+      PYICEBERG_CATALOG__KEST__S3__PATH_STYLE_ACCESS: "true"
+      PYICEBERG_CATALOG__KEST__S3__REGION: us-east-1
+    volumes:
+      - ./src:/opt/kest/src:ro,Z
+      - ./workloads:/opt/kest/workloads:ro,Z
+      - ./tests:/opt/kest/tests:ro,Z
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
