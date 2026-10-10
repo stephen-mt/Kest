@@ -1,0 +1,12 @@
+name: campaigns
+base_url: http://source-api:8000
+endpoint: /campaigns
+table_name: marketing_campaigns
+primary_key: campaign_id
+updated_at: updated_at
+data_path: items
+cursor_param: cursor
+next_cursor_path: next_cursor
+page_size: 100
+timeout_seconds: 10
+max_retries: 4

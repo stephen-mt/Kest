@@ -10,3 +10,12 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+.runtime/
+logs/
+target/
+**/target/
+**/.dlt/
+**/.venv/
+*.egg-info/
+test-results/
+backups/

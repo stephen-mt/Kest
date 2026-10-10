@@ -1,0 +1,25 @@
+source:
+  type: clickhouse
+  serviceName: kest_clickhouse
+  serviceConnection:
+    config:
+      type: Clickhouse
+      username: metadata_reader
+      password: ${CLICKHOUSE_METADATA_PASSWORD}
+      hostPort: clickhouse:8123
+      databaseSchema: gold
+  sourceConfig:
+    config:
+      type: DatabaseMetadata
+      includeTables: true
+      includeViews: true
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  loggerLevel: INFO
+  openMetadataServerConfig:
+    hostPort: http://openmetadata-server:8585/api
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OPENMETADATA_INGESTION_TOKEN}

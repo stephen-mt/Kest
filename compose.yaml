@@ -1,0 +1,407 @@
+name: ${COMPOSE_PROJECT_NAME:-kest}
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: infra/images/airflow/Dockerfile
+  image: kest-airflow:3.3.2
+  env_file: [.env]
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY}
+    # Airflow 3 task processes report state through the execution API.  The
+    # default localhost URL is wrong for Celery workers in another container.
+    AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/kest/orchestration/dags
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "8"
+    AIRFLOW__CELERY__WORKER_CONCURRENCY: ${AIRFLOW_WORKER_CONCURRENCY:-3}
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+    PYTHONPATH: /opt/kest/ingestion:/opt/kest/orchestration
+  volumes:
+    - ./:/opt/kest:ro
+    - ./.runtime:/opt/kest/.runtime
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    clickhouse:
+      condition: service_healthy
+    seaweed-s3:
+      condition: service_healthy
+  networks: [control, data]
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17.9-bookworm
+    env_file: [.env]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [control, data]
+    restart: unless-stopped
+    mem_limit: 768m
+
+  redis:
+    image: redis:8.10.1-trixie
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 384m
+
+  seaweed-master:
+    image: chrislusf/seaweedfs:4.48
+    command: ["master", "-ip=seaweed-master", "-ip.bind=0.0.0.0", "-mdir=/data"]
+    volumes: ["seaweed-master-data:/data"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9333/cluster/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+    restart: unless-stopped
+    mem_limit: 256m
+
+  seaweed-volume:
+    image: chrislusf/seaweedfs:4.48
+    command: ["volume", "-mserver=seaweed-master:9333", "-ip=seaweed-volume", "-ip.bind=0.0.0.0", "-dir=/data", "-max=20"]
+    volumes: ["seaweed-volume-data:/data"]
+    depends_on:
+      seaweed-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+    restart: unless-stopped
+    mem_limit: 512m
+
+  seaweed-filer:
+    image: chrislusf/seaweedfs:4.48
+    command: ["filer", "-master=seaweed-master:9333", "-ip=seaweed-filer", "-ip.bind=0.0.0.0"]
+    volumes: ["seaweed-filer-data:/data"]
+    depends_on:
+      seaweed-master:
+        condition: service_healthy
+      seaweed-volume:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8888/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+    restart: unless-stopped
+    mem_limit: 512m
+
+  seaweed-s3:
+    image: chrislusf/seaweedfs:4.48
+    command: ["s3", "-filer=seaweed-filer:8888", "-ip.bind=0.0.0.0", "-config=/etc/seaweedfs/s3.json"]
+    volumes:
+      - ./.runtime/seaweed/s3.json:/etc/seaweedfs/s3.json:ro
+    ports: ["127.0.0.1:8333:8333"]
+    depends_on:
+      seaweed-filer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+    restart: unless-stopped
+    mem_limit: 384m
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.22.13
+    env_file: [.env]
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./infra/clickhouse/init:/docker-entrypoint-initdb.d:ro
+      - ./infra/clickhouse/config/settings.xml:/etc/clickhouse-server/config.d/kest-settings.xml:ro
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --user=default --password='$${CLICKHOUSE_ADMIN_PASSWORD}' 'http://localhost:8123/ping' | grep Ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [data]
+    restart: unless-stopped
+    mem_limit: ${CLICKHOUSE_MEMORY_LIMIT:-4g}
+
+  source-api:
+    build:
+      context: .
+      dockerfile: infra/images/tooling.Dockerfile
+    image: kest-tooling:0.1.0
+    env_file: [.env]
+    command: ["uvicorn", "source_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes: ["./:/opt/kest:ro"]
+    ports: ["127.0.0.1:8090:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [data]
+    restart: unless-stopped
+    mem_limit: 256m
+
+  tooling:
+    build:
+      context: .
+      dockerfile: infra/images/tooling.Dockerfile
+    image: kest-tooling:0.1.0
+    env_file: [.env]
+    environment:
+      PYTHONPATH: /opt/kest/ingestion
+    volumes: ["./:/opt/kest"]
+    working_dir: /opt/kest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      seaweed-s3:
+        condition: service_healthy
+    networks: [control, data]
+    profiles: [tools]
+
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    command:
+      - bash
+      - -ec
+      - |
+        airflow db migrate
+        airflow pools set source_ingestion 3 'Source API and database extraction'
+        airflow pools set clickhouse_transform 2 'ClickHouse and dbt transformations'
+        airflow pools set gold_publish 1 'Serialized Gold publication'
+        airflow pools set heavy_backfill 1 'Resource-capped historical rebuilds'
+        airflow pools set catalog_sync 1 'OpenMetadata synchronization'
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: api-server
+    ports: ["127.0.0.1:8080:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$${HOSTNAME}"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+    mem_limit: 2048m
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+
+  superset-init:
+    build:
+      context: .
+      dockerfile: infra/images/superset/Dockerfile
+    image: kest-superset:6.1.0
+    env_file: [.env]
+    environment: &superset-env
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_DATABASE_URI: postgresql+psycopg2://superset:${SUPERSET_DB_PASSWORD}@postgres:5432/superset
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        superset db upgrade
+        superset fab create-admin --username "$${SUPERSET_ADMIN_USER}" --firstname Kest --lastname Admin --email admin@kest.local --password "$${SUPERSET_ADMIN_PASSWORD}" || true
+        superset init
+        python /opt/kest/serving/bootstrap_superset.py
+    volumes: ["./:/opt/kest:ro"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks: [control, data]
+    restart: "no"
+
+  superset:
+    image: kest-superset:6.1.0
+    env_file: [.env]
+    environment: *superset-env
+    command: ["/app/docker/entrypoints/run-server.sh"]
+    ports: ["127.0.0.1:8088:8088"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [control, data]
+    restart: unless-stopped
+    mem_limit: 1024m
+
+  superset-worker:
+    image: kest-superset:6.1.0
+    env_file: [.env]
+    environment: *superset-env
+    command: ["celery", "--app=superset.tasks.celery_app:app", "worker", "--pool=prefork", "--concurrency=2"]
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app=superset.tasks.celery_app:app inspect ping -d celery@$$HOSTNAME | grep pong"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [control, data]
+    restart: unless-stopped
+    mem_limit: 768m
+
+  opensearch:
+    image: opensearchproject/opensearch:3.2.0
+    profiles: [catalog]
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes: ["opensearch-data:/usr/share/opensearch/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+    networks: [control]
+    mem_limit: 1536m
+
+  openmetadata-migrate:
+    image: docker.getcollate.io/openmetadata/server:2.0.5
+    profiles: [catalog]
+    env_file: [.env]
+    environment: &om-env
+      DB_DRIVER_CLASS: org.postgresql.Driver
+      DB_SCHEME: postgresql
+      DB_USE_SSL: "false"
+      DB_USER: openmetadata
+      DB_USER_PASSWORD: ${OPENMETADATA_DB_PASSWORD}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      OM_DATABASE: openmetadata
+      ELASTICSEARCH_HOST: opensearch
+      ELASTICSEARCH_PORT: "9200"
+      ELASTICSEARCH_SCHEME: http
+      ELASTICSEARCH_CLUSTER_ALIAS: openmetadata
+      SEARCH_TYPE: opensearch
+      AUTHENTICATION_PROVIDER: basic
+      SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+    command: ["./bootstrap/bootstrap_storage.sh", "migrate-all"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+    networks: [control]
+    restart: "no"
+
+  openmetadata-server:
+    image: docker.getcollate.io/openmetadata/server:2.0.5
+    profiles: [catalog]
+    env_file: [.env]
+    environment: *om-env
+    depends_on:
+      openmetadata-migrate:
+        condition: service_completed_successfully
+    ports: ["127.0.0.1:8585:8585"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8585/healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+    networks: [control, data]
+    restart: unless-stopped
+    mem_limit: 1536m
+
+networks:
+  control:
+    internal: false
+  data:
+    internal: false
+
+volumes:
+  postgres-data:
+  redis-data:
+  clickhouse-data:
+  seaweed-master-data:
+  seaweed-volume-data:
+  seaweed-filer-data:
+  airflow-logs:
+  opensearch-data:

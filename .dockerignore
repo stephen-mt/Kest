@@ -1,0 +1,8 @@
+.git
+.env
+.runtime
+.pytest_cache
+.ruff_cache
+**/__pycache__
+transformations/logs
+transformations/target

@@ -1,0 +1,19 @@
+source:
+  type: dbt
+  serviceName: kest_clickhouse
+  sourceConfig:
+    config:
+      type: DBT
+      dbtConfigSource:
+        dbtCatalogFilePath: /opt/kest/.runtime/dbt/target/catalog.json
+        dbtManifestFilePath: /opt/kest/.runtime/dbt/target/manifest.json
+        dbtRunResultsFilePath: /opt/kest/.runtime/dbt/target/run_results.json
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  openMetadataServerConfig:
+    hostPort: http://openmetadata-server:8585/api
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OPENMETADATA_INGESTION_TOKEN}

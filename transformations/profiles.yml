@@ -1,0 +1,21 @@
+kest:
+  target: production
+  outputs:
+    production:
+      type: clickhouse
+      host: "{{ env_var('CLICKHOUSE_HOST', 'clickhouse') }}"
+      port: "{{ env_var('CLICKHOUSE_PORT', '8123') | int }}"
+      user: pipeline
+      password: "{{ env_var('CLICKHOUSE_PIPELINE_PASSWORD') }}"
+      schema: gold_candidate
+      secure: false
+      threads: 2
+    dev:
+      type: clickhouse
+      host: "{{ env_var('CLICKHOUSE_HOST', 'clickhouse') }}"
+      port: "{{ env_var('CLICKHOUSE_PORT', '8123') | int }}"
+      user: "de_{{ env_var('DEVELOPER') }}"
+      password: "{{ env_var('DE_' ~ env_var('DEVELOPER') | upper ~ '_PASSWORD') }}"
+      schema: "dev_{{ env_var('DEVELOPER') }}"
+      secure: false
+      threads: 2

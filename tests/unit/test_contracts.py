@@ -1,0 +1,37 @@
+from pathlib import Path
+
+import pytest
+from kest_ingestion.config import ROOT, Settings
+from kest_ingestion.ingest import _content_identity, _csv_records
+from kest_ingestion.models import SourceConfig
+from pydantic import ValidationError
+
+
+def test_content_identity_is_order_stable() -> None:
+    first = {"orders": [{"order_id": "2", "amount": 2}, {"order_id": "1", "amount": 1}]}
+    second = {"orders": [{"amount": 2, "order_id": "2"}, {"amount": 1, "order_id": "1"}]}
+    assert _content_identity("postgres", first) == _content_identity("postgres", second)
+
+
+def test_breaking_csv_is_rejected() -> None:
+    path = ROOT / "ingestion" / "fixtures" / "product_catalog_breaking.csv"
+    with pytest.raises(ValueError, match="unit_cost is not numeric"):
+        _csv_records(path)
+
+
+def test_source_config_forbids_private_dsl_fields() -> None:
+    with pytest.raises(ValidationError):
+        SourceConfig.model_validate(
+            {
+                "name": "campaigns",
+                "base_url": "http://source",
+                "endpoint": "/campaigns",
+                "table_name": "campaigns",
+                "primary_key": "id",
+                "made_up_operator": "magic",
+            }
+        )
+
+
+def test_runtime_directory_is_outside_tracked_source() -> None:
+    assert Settings().runtime_dir == Path(ROOT / ".runtime")

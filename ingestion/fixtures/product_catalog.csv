@@ -1,0 +1,4 @@
+product_id,product_name,category,unit_cost,updated_at,is_deleted
+prod_001,Everyday Sneakers,footwear,22.50,2026-01-01T00:00:00+00:00,false
+prod_002,Canvas Backpack,bags,31.00,2026-01-01T00:00:00+00:00,false
+prod_003,Reusable Bottle,accessories,,2026-01-01T00:00:00+00:00,false

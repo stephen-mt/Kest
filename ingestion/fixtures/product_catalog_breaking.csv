@@ -1,0 +1,2 @@
+product_id,product_name,category,unit_cost,updated_at,is_deleted
+prod_001,Everyday Sneakers,footwear,not-a-decimal,2026-01-02T00:00:00+00:00,false

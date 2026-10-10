@@ -1,0 +1,43 @@
+version: 2
+models:
+  - name: mart_daily_revenue
+    description: "Canonical daily revenue by order date and currency. Successful payments less successful refunds; late refunds remain attributed to the original order date."
+    meta:
+      owner: analytics-engineering
+      grain: order_date + currency
+      freshness_expectation: 26 hours
+      canonical_metrics: [captured_revenue, refunded_revenue, net_revenue]
+    columns:
+      - name: order_date
+        data_tests: [not_null]
+      - name: currency
+        data_tests: [not_null]
+      - name: net_revenue
+        data_tests: [not_null]
+    data_tests:
+      - unique:
+          column_name: "concat(toString(order_date), ':', currency)"
+  - name: mart_conversion_funnel
+    description: "Daily campaign funnel and canonical spend at event_date + campaign_id grain."
+    meta:
+      owner: growth-analytics
+      grain: event_date + campaign_id
+      freshness_expectation: 26 hours
+      canonical_metrics: [viewing_sessions, cart_sessions, checkout_sessions, campaign_spend]
+    columns:
+      - name: event_date
+        data_tests: [not_null]
+      - name: campaign_id
+        data_tests: [not_null]
+  - name: mart_customer_orders
+    description: "One row per order with customer, lifecycle state and gross/paid/refunded/net amounts."
+    meta:
+      owner: analytics-engineering
+      grain: order_id
+      freshness_expectation: 26 hours
+      canonical_metrics: [gross_amount, paid_amount, refunded_amount, net_amount]
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests: [not_null]

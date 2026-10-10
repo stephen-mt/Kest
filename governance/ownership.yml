@@ -1,0 +1,10 @@
+datasets:
+  gold.mart_daily_revenue:
+    owner: analytics-engineering
+    glossary: [Net Revenue, Captured Revenue, Refunded Revenue]
+  gold.mart_conversion_funnel:
+    owner: growth-analytics
+    glossary: [Conversion Rate, Campaign Spend]
+  gold.mart_customer_orders:
+    owner: analytics-engineering
+    glossary: [Gross Order Value, Net Revenue]
