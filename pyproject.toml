@@ -26,6 +26,7 @@ test = [
   "pytest==8.4.2",
   "pytest-timeout==2.4.0",
   "ruff==0.13.2",
+  "mypy==1.18.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -47,3 +48,10 @@ line-length = 110
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+ignore_missing_imports = true
+disable_error_code = ["import-untyped"]
+exclude = ["orchestration/dags"]

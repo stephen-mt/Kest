@@ -24,6 +24,12 @@ CREATE SETTINGS PROFILE IF NOT EXISTS analyst_limits SETTINGS
   max_execution_time = 30,
   max_rows_to_read = 10000000;
 
+CREATE SETTINGS PROFILE IF NOT EXISTS development_limits SETTINGS
+  max_threads = 4,
+  max_memory_usage = 2000000000,
+  max_execution_time = 120,
+  max_rows_to_read = 50000000;
+
 CREATE USER IF NOT EXISTS pipeline IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_PIPELINE_PASSWORD}';
 CREATE USER IF NOT EXISTS publisher IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_PUBLISH_PASSWORD}';
 CREATE USER IF NOT EXISTS da IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_DA_PASSWORD}';

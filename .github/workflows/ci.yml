@@ -1,0 +1,61 @@
+name: Kest CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kest-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate local test credentials
+        run: make bootstrap-env
+      - name: Validate Compose
+        run: make config
+      - name: Build tooling image
+        run: docker compose build tooling
+      - name: Lint and type-check
+        run: |
+          docker compose run --rm --no-deps tooling ruff check ingestion orchestration tests ops serving
+          docker compose run --rm --no-deps tooling mypy ingestion ops serving
+      - name: Unit and contract tests
+        run: docker compose run --rm --no-deps tooling pytest -q tests/unit
+
+  core-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Boot core and execute acceptance path
+        run: |
+          make up
+          make seed
+          make pipeline
+          make test-integration
+          make smoke
+          make health
+      - name: Validate Airflow DAG imports
+        run: |
+          test "$(docker compose exec -T airflow-api-server airflow dags list-import-errors --output=json)" = "[]"
+          docker compose exec -T airflow-api-server airflow dags list --output=json
+      - name: Preserve service logs on failure
+        if: failure()
+        run: docker compose logs --no-color > compose.log
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: compose-logs
+          path: compose.log
+      - name: Stop stack
+        if: always()
+        run: docker compose --profile catalog down -v

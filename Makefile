@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 
 COMPOSE := docker compose --env-file .env -f compose.yaml
 
-.PHONY: help bootstrap-env up seed pipeline test test-unit test-integration smoke health \
+.PHONY: help bootstrap-env up seed pipeline test test-unit test-integration smoke health type \
 	catalog-up catalog-down failure-test backup restore-test down dev-init dbt-build \
 	credentials dependency-check lint config
 
@@ -66,7 +66,7 @@ dev-init: bootstrap-env ## Create an isolated ClickHouse database; DEVELOPER is 
 
 dbt-build: bootstrap-env ## Build dbt in an isolated dev database; DEVELOPER is required
 	@test -n "$(DEVELOPER)" || (echo "DEVELOPER is required" >&2; exit 2)
-	@$(COMPOSE) run --rm -e DEVELOPER="$(DEVELOPER)" tooling /opt/venvs/dbt/bin/dbt build --project-dir transformations --profiles-dir transformations --target dev
+	@$(COMPOSE) run --rm -e DEVELOPER="$(DEVELOPER)" tooling bash -ec 'test -f "/opt/kest/.runtime/developers/$${DEVELOPER}.env" || { echo "Run make dev-init DEVELOPER=$${DEVELOPER} first" >&2; exit 2; }; set -a; source "/opt/kest/.runtime/developers/$${DEVELOPER}.env"; set +a; exec /opt/venvs/dbt/bin/dbt build --project-dir transformations --profiles-dir transformations --target dev'
 
 credentials: bootstrap-env ## Show local UI endpoints and generated usernames/passwords
 	@python3 ops/show_credentials.py
@@ -76,5 +76,8 @@ dependency-check: bootstrap-env ## Check pinned Python dependencies and containe
 	@$(COMPOSE) config --quiet
 
 lint: bootstrap-env ## Run Python linting and static configuration checks
-	@$(COMPOSE) run --rm tooling ruff check ingestion orchestration tests ops
+	@$(COMPOSE) run --rm tooling ruff check ingestion orchestration tests ops serving
 	@$(COMPOSE) run --rm tooling python -m kest_ingestion.cli validate-config
+
+type: bootstrap-env ## Type-check platform Python code
+	@$(COMPOSE) run --rm tooling mypy ingestion ops serving

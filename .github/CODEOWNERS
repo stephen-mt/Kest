@@ -1,0 +1,9 @@
+# Ownership routes reviews; enforcement requires the repository ruleset in
+# docs/branch-protection.md.
+* @stephen-mt
+/compose.yaml @stephen-mt
+/infra/ @stephen-mt
+/orchestration/ @stephen-mt
+/transformations/ @stephen-mt
+/governance/ @stephen-mt
+/ops/ @stephen-mt

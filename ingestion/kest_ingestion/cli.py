@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
+import secrets
 import subprocess
 import sys
 import uuid
@@ -111,7 +111,9 @@ def smoke(settings: Settings) -> None:
         expected = cur.fetchone()[0]
     if net != expected:
         raise RuntimeError(f"Gold/source net revenue mismatch: gold={net}, source={expected}")
-    print(json.dumps({"gold_rows": counts, "net_revenue": str(net), "source_expected": str(expected)}, indent=2))
+    print(
+        json.dumps({"gold_rows": counts, "net_revenue": str(net), "source_expected": str(expected)}, indent=2)
+    )
 
 
 def dev_init(settings: Settings, developer: str) -> None:
@@ -120,18 +122,31 @@ def dev_init(settings: Settings, developer: str) -> None:
     client = clickhouse_client(settings, "default")
     database = f"dev_{developer}"
     user = f"de_{developer}"
-    password_var = f"DE_{developer.upper()}_PASSWORD"
-    password = os.getenv(password_var)
+    credentials_dir = settings.runtime_dir / "developers"
+    credentials_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    credentials_file = credentials_dir / f"{developer}.env"
+    password = ""
+    if credentials_file.exists():
+        for line in credentials_file.read_text().splitlines():
+            if line.startswith("DBT_DEV_PASSWORD="):
+                password = line.split("=", 1)[1]
+                break
     if not password:
-        raise RuntimeError(f"Set {password_var} in .env before provisioning")
+        password = secrets.token_urlsafe(32)
     client.command(f"CREATE DATABASE IF NOT EXISTS {database} ENGINE=Atomic")
     client.command(
         f"CREATE USER IF NOT EXISTS {user} IDENTIFIED WITH sha256_password BY %(password)s",
         parameters={"password": password},
     )
+    client.command(
+        f"ALTER USER {user} IDENTIFIED WITH sha256_password BY %(password)s SETTINGS PROFILE development_limits",
+        parameters={"password": password},
+    )
     client.command(f"GRANT de_development TO {user}")
     client.command(f"GRANT ALL ON {database}.* TO {user}")
-    print(json.dumps({"database": database, "user": user}))
+    credentials_file.write_text(f"DEVELOPER={developer}\nDBT_DEV_PASSWORD={password}\n")
+    credentials_file.chmod(0o600)
+    print(json.dumps({"database": database, "user": user, "credentials_file": str(credentials_file)}))
 
 
 def validate_configs() -> None:
