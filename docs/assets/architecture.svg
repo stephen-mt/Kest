@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Kest data platform architecture</title>
+  <desc id="desc">Data flows from PostgreSQL, REST APIs and files through dlt and SILO into ClickHouse, dbt Gold marts and Superset. Airflow controls execution and OpenMetadata provides catalog and lineage.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071426"/>
+      <stop offset="1" stop-color="#102948"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000" flood-opacity=".28"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#53d8fb"/>
+    </marker>
+    <marker id="metaArrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#c4a7ff"/>
+    </marker>
+    <style>
+      .title{font:700 32px Inter,Arial,sans-serif;fill:#f7fbff}.subtitle{font:400 16px Inter,Arial,sans-serif;fill:#a9bfd7}
+      .lane{fill:#0c1d33;stroke:#2b4867;stroke-width:2}.box{filter:url(#shadow);stroke-width:2;rx:16}
+      .name{font:700 18px Inter,Arial,sans-serif;fill:#fff}.detail{font:400 13px Inter,Arial,sans-serif;fill:#d5e4f2}
+      .laneTitle{font:700 14px Inter,Arial,sans-serif;fill:#7f9fbd;letter-spacing:1.5px}.flow{fill:none;stroke:#53d8fb;stroke-width:4;marker-end:url(#arrow)}
+      .meta{fill:none;stroke:#c4a7ff;stroke-width:3;stroke-dasharray:8 7;marker-end:url(#metaArrow)}
+      .user{fill:#162f50;stroke:#f2c94c}.source{fill:#173b4d;stroke:#53d8fb}.process{fill:#17375d;stroke:#66a6ff}
+      .store{fill:#25415d;stroke:#5ee0ae}.product{fill:#3b285e;stroke:#c4a7ff}.control{fill:#4a3420;stroke:#f5ad5b}
+    </style>
+  </defs>
+  <rect width="1400" height="760" fill="url(#bg)"/>
+  <text x="56" y="58" class="title">Kest — production-disciplined OSS data platform</text>
+  <text x="56" y="86" class="subtitle">One clear path from source to governed analytics; isolated development and controlled publication</text>
+
+  <rect x="40" y="120" width="1320" height="340" rx="24" class="lane"/>
+  <text x="64" y="151" class="laneTitle">DATA PLANE</text>
+
+  <rect x="65" y="185" width="155" height="70" class="box source"/>
+  <text x="87" y="216" class="name">PostgreSQL</text><text x="87" y="239" class="detail">business sources</text>
+  <rect x="65" y="275" width="155" height="70" class="box source"/>
+  <text x="87" y="306" class="name">REST APIs</text><text x="87" y="329" class="detail">cursor + incremental</text>
+  <rect x="65" y="365" width="155" height="70" class="box source"/>
+  <text x="87" y="396" class="name">Files</text><text x="87" y="419" class="detail">CSV contracts</text>
+
+  <rect x="285" y="245" width="175" height="110" class="box process"/>
+  <text x="330" y="285" class="name">dlt ingestion</text>
+  <text x="307" y="311" class="detail">checkpoint • manifest</text>
+  <text x="307" y="334" class="detail">retry • reconciliation</text>
+
+  <rect x="525" y="245" width="175" height="110" class="box store"/>
+  <text x="575" y="285" class="name">SILO</text>
+  <text x="553" y="311" class="detail">versioned raw Parquet</text>
+  <text x="553" y="334" class="detail">S3-compatible policies</text>
+
+  <rect x="765" y="205" width="205" height="190" class="box store"/>
+  <text x="812" y="245" class="name">ClickHouse</text>
+  <text x="795" y="275" class="detail">append-only raw</text>
+  <text x="795" y="302" class="detail">staging → core</text>
+  <text x="795" y="329" class="detail">gold_candidate</text>
+  <text x="795" y="356" class="detail">atomic publish → Gold</text>
+
+  <rect x="1035" y="245" width="150" height="110" class="box process"/>
+  <text x="1080" y="285" class="name">dbt</text>
+  <text x="1058" y="311" class="detail">models • contracts</text>
+  <text x="1058" y="334" class="detail">tests • documentation</text>
+
+  <rect x="1230" y="245" width="105" height="110" class="box product"/>
+  <text x="1249" y="289" class="name">Gold</text>
+  <text x="1247" y="315" class="detail">3 marts</text>
+  <text x="1247" y="337" class="detail">read-only</text>
+
+  <path d="M220 220 C250 220 250 270 285 280" class="flow"/><path d="M220 310 H285" class="flow"/><path d="M220 400 C250 400 250 335 285 325" class="flow"/>
+  <path d="M460 300 H525" class="flow"/><path d="M700 300 H765" class="flow"/><path d="M970 270 H1035" class="flow"/><path d="M1185 300 H1230" class="flow"/>
+  <path d="M1035 340 C1005 410 930 420 900 395" class="flow"/>
+
+  <rect x="40" y="490" width="1320" height="220" rx="24" class="lane"/>
+  <text x="64" y="521" class="laneTitle">CONTROL, GOVERNANCE AND USER SURFACES</text>
+
+  <rect x="70" y="560" width="155" height="95" class="box user"/>
+  <text x="127" y="597" class="name">DE</text><text x="91" y="624" class="detail">Git • dbt • Airflow</text>
+  <rect x="270" y="545" width="175" height="125" class="box control"/>
+  <text x="318" y="584" class="name">Airflow</text><text x="293" y="611" class="detail">schedule • retry • pools</text><text x="293" y="636" class="detail">backfill • run history</text>
+  <rect x="490" y="545" width="175" height="125" class="box control"/>
+  <text x="524" y="584" class="name">PostgreSQL</text><text x="513" y="611" class="detail">service databases</text><text x="513" y="636" class="detail">manifests • locks</text>
+  <rect x="710" y="545" width="190" height="125" class="box product"/>
+  <text x="742" y="584" class="name">OpenMetadata</text><text x="734" y="611" class="detail">search • owner • glossary</text><text x="734" y="636" class="detail">tests • lineage • impact</text>
+  <rect x="945" y="545" width="175" height="125" class="box product"/>
+  <text x="993" y="584" class="name">Superset</text><text x="969" y="611" class="detail">exploration • charts</text><text x="969" y="636" class="detail">governed dashboards</text>
+  <rect x="1165" y="560" width="155" height="95" class="box user"/>
+  <text x="1223" y="597" class="name">DA</text><text x="1193" y="624" class="detail">catalog • BI • SQL</text>
+
+  <path d="M225 607 H270" class="flow"/><path d="M445 607 H490" class="flow"/><path d="M900 607 H945" class="flow"/><path d="M1120 607 H1165" class="flow"/>
+  <path d="M357 545 C360 480 370 430 370 355" class="flow"/>
+  <path d="M805 545 C805 485 860 455 860 395" class="meta"/>
+  <path d="M805 545 C910 475 1080 470 1110 355" class="meta"/>
+  <path d="M805 545 C930 500 1020 500 1030 545" class="meta"/>
+
+  <text x="58" y="742" class="detail">Solid cyan: data/control execution   •   Dashed violet: metadata, lineage and discovery   •   Gold writes: publish_service only</text>
+</svg>

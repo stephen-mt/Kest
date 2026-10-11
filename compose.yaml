@@ -16,9 +16,11 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY}
-    # Airflow 3 task processes report state through the execution API.  The
-    # default localhost URL is wrong for Celery workers in another container.
-    AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
+    # The browser-facing base URL must remain reachable from the host. Celery
+    # tasks use a separate internal URL to report state to Airflow's execution
+    # API without leaking the Compose hostname into login redirects.
+    AIRFLOW__API__BASE_URL: http://127.0.0.1:8080
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
     AIRFLOW__CORE__DAGS_FOLDER: /opt/kest/orchestration/dags
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"

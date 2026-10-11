@@ -1,5 +1,8 @@
 # Operator runbook
 
+This file is intentionally limited to platform operations. User-facing steps
+live in the [DE cookbook](de-cookbook.md) and [DA cookbook](da-cookbook.md).
+
 ## Start and inspect
 
 ```bash
@@ -13,10 +16,9 @@ starts pinned services, applies database/object-store bootstrap, creates
 Airflow pools/users and provisions Superset assets. It does not load sample
 data. `make demo` is the explicit acceptance fixture.
 
-Core UIs are Airflow `:8080`, Superset `:8088` and SILO Console `:9001`.
-`make catalog` starts OpenMetadata `:8585`, synchronizes assets and unpauses its
-daily metadata DAG. `make catalog-down` pauses that DAG before stopping the
-catalog so an optional service cannot generate routine Airflow failures.
+`make catalog` starts OpenMetadata, synchronizes assets and unpauses its daily
+metadata DAG. `make catalog-down` pauses that DAG before stopping the catalog,
+so an optional service cannot generate routine Airflow failures.
 
 ## Failed pipeline
 

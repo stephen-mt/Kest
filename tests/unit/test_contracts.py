@@ -44,3 +44,12 @@ def test_airflow_dags_use_task_sdk_instead_of_shell_wrappers() -> None:
     assert "bash_command" not in dag_source
     assert "kest_ingestion.cli" not in dag_source
     assert not (dag_dir / "backup_restore_verify.py").exists()
+
+
+def test_airflow_public_and_execution_urls_are_separate() -> None:
+    compose = (ROOT / "compose.yaml").read_text()
+    assert "AIRFLOW__API__BASE_URL: http://127.0.0.1:8080" in compose
+    assert (
+        "AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "
+        "http://airflow-api-server:8080/execution/"
+    ) in compose
