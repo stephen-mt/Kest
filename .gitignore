@@ -16,6 +16,7 @@ target/
 **/target/
 **/.dlt/
 **/.venv/
+transformations/.user.yml
 *.egg-info/
 test-results/
 backups/

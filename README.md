@@ -1,20 +1,24 @@
 # Kest
 
-Kest is a compact OSS data platform for a small DE/DA team on one Docker host.
-The default stack contains only PostgreSQL, Redis, SILO object storage,
-ClickHouse, Airflow and Superset. OpenMetadata and sample workloads are optional
-profiles, so they do not consume resources or add operational work unless used.
+Kest is a small-team data platform: DEs build sources and dbt models, DAs work
+from governed Gold datasets, and Airflow operates the path between them. The
+core runs on one Docker Compose host; OpenMetadata and the sample workload are
+optional profiles.
 
 ```bash
-make up                         # operator: start the usable platform
-make de DEVELOPER=alice         # DE: isolated ClickHouse + dbt workspace
-make da                         # DA: Superset URL and login
-make source-new SOURCE=crm BASE_URL=https://api.example.com ENDPOINT=/customers
+make up                    # core: Airflow, ClickHouse, SILO, Superset
+make credentials           # URLs and local logins
+make catalog               # optional OpenMetadata UI plus metadata sync
+make de DEVELOPER=alice    # isolated dev_alice database and dbt build
+make da                    # Superset entry point for analysts
 ```
 
-`make demo` loads a tiny ecommerce example only when someone wants to test the
-whole path. It is not part of normal operation.
+The ecommerce data is only an acceptance fixture. `make demo` loads it; normal
+startup does not create or schedule demo workload.
 
-Start with [the short workflow](docs/quickstart.md). The production boundary is
-documented in [architecture.md](docs/architecture.md), and exact release pins
-are in [versions.md](docs/versions.md).
+- [What DEs and DAs do every day](docs/workflows.md)
+- [Current architecture and security boundaries](docs/architecture.md)
+- [Dev, staging, production and CI/CD](docs/environments.md)
+- [Operator runbook](docs/operations.md)
+- [Pinned component versions](docs/versions.md)
+- [Evidence from the last acceptance run](docs/implementation-status.md)

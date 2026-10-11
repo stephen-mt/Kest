@@ -30,3 +30,5 @@ else:
     print(f"  username: {values['S3_ADMIN_ACCESS_KEY']}")
     print(f"  password: {values['S3_ADMIN_SECRET_KEY']}")
     print("OpenMetadata (optional): http://127.0.0.1:8585")
+    print("  initial local username: admin@open-metadata.org")
+    print("  initial local password: admin (rotate or replace with SSO before production)")

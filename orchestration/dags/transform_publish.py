@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from _common import DEFAULT_ARGS, cli_task
+from _common import DEFAULT_ARGS, dbt_candidate_group, publish_gold_task, task_options
 from airflow.sdk import DAG
 
 with DAG(
@@ -12,6 +12,6 @@ with DAG(
     default_args=DEFAULT_ARGS,
     tags=["kest", "publish"],
 ) as dag:
-    cli_task("dbt_build_candidate", "transform", "clickhouse_transform", 45) >> cli_task(
-        "publish_gold", "publish", "gold_publish"
-    )
+    dbt_candidate_group() >> publish_gold_task.override(
+        task_id="publish_gold", **task_options("gold_publish")
+    )()

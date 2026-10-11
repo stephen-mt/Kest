@@ -20,7 +20,7 @@ RUN python -m pip install --no-cache-dir \
       --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 RUN python -m venv /opt/venvs/ingestion \
-    && /opt/venvs/ingestion/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venvs/ingestion/bin/pip install --no-cache-dir "pip==26.2.1" \
     && /opt/venvs/ingestion/bin/pip install --no-cache-dir \
       "boto3==1.40.40" \
       "clickhouse-connect==1.10.0" \
@@ -33,16 +33,16 @@ RUN python -m venv /opt/venvs/ingestion \
       "tenacity==9.1.2"
 
 RUN python -m venv /opt/venvs/dbt \
-    && /opt/venvs/dbt/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venvs/dbt/bin/pip install --no-cache-dir "pip==26.2.1" \
     && /opt/venvs/dbt/bin/pip install --no-cache-dir \
       "dbt-core==1.12.5" \
       "dbt-clickhouse==1.10.3"
 
 RUN python -m venv /opt/venvs/metadata \
-    && /opt/venvs/metadata/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venvs/metadata/bin/pip install --no-cache-dir "pip==26.2.1" \
     && /opt/venvs/metadata/bin/pip install --no-cache-dir \
       "openmetadata-ingestion[clickhouse,dbt,airflow,postgres,superset]==2.0.5.0" \
       "psycopg2-binary==2.9.11"
 
-ENV PYTHONPATH=/opt/kest/ingestion:/opt/kest/orchestration
+ENV PYTHONPATH=/opt/kest:/opt/kest/ingestion:/opt/kest/orchestration
 WORKDIR /opt/kest

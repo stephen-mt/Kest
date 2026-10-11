@@ -90,7 +90,6 @@ def main() -> None:
                 "transform_publish",
                 "controlled_backfill",
                 "metadata_sync",
-                "backup_restore_verify",
             )
         }
         require(expected_pipelines.issubset(pipelines), f"Missing Airflow pipelines: {pipelines}")

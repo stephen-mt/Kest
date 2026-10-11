@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 COMPOSE := docker compose --env-file .env -f compose.yaml
 
 .PHONY: help bootstrap-env up demo-up seed pipeline demo de da source-new test test-unit test-integration smoke health type \
-	catalog-up catalog-down failure-test backup restore-test down dev-init dbt-build \
+	catalog catalog-up catalog-sync catalog-down failure-test backup restore-test down dev-init dbt-build \
 	credentials dependency-check lint config
 
 help:
@@ -18,10 +18,10 @@ config: bootstrap-env ## Validate the resolved Docker Compose model
 
 up: bootstrap-env ## Build and start the core platform
 	@$(COMPOSE) build tooling airflow-init superset-init
-	@$(COMPOSE) run --rm --no-deps --user root tooling bash -ec 'chmod 0711 /opt/kest/.runtime; mkdir -p /opt/kest/.runtime/{batches,dlt,dbt/logs,dbt/target,backups}; chmod -R a+rwX /opt/kest/.runtime/{batches,dlt,dbt,backups}'
+	@$(COMPOSE) run --rm --no-deps --user root tooling python ops/prepare_runtime.py
 	@$(COMPOSE) up -d --no-build --wait postgres redis object-store clickhouse
 	@$(COMPOSE) run --rm --no-deps object-store-init
-	@$(COMPOSE) exec -T clickhouse bash -ec 'clickhouse-client --user default --password "$$CLICKHOUSE_PASSWORD" --multiquery < /docker-entrypoint-initdb.d/10-raw-tables.sql'
+	@python3 -m ops.clickhouse_bootstrap
 	@$(COMPOSE) run --rm --no-deps airflow-init
 	@$(COMPOSE) run --rm --no-deps superset-init
 	@$(COMPOSE) up -d --no-build --wait airflow-api-server airflow-scheduler airflow-dag-processor airflow-worker airflow-triggerer superset superset-worker
@@ -64,20 +64,29 @@ smoke: bootstrap-env ## Verify the end-to-end business outcome
 health: bootstrap-env ## Run deep service, SQL and S3 health checks
 	@$(COMPOSE) run --rm tooling python -m kest_ingestion.cli health
 
-catalog-up: bootstrap-env ## Start optional OpenMetadata catalog services
+catalog-up: bootstrap-env ## Start optional OpenMetadata catalog services and UI
 	@$(COMPOSE) --profile catalog up -d --wait opensearch openmetadata-migrate openmetadata-server
+	@echo "OpenMetadata UI: http://127.0.0.1:8585 (initial local login: admin@open-metadata.org / admin)"
+
+catalog-sync: bootstrap-env ## Synchronize lineage, ownership, tests and dashboards into OpenMetadata
+	@$(COMPOSE) exec -T airflow-worker python /opt/kest/ops/catalog_sync.py
+
+catalog: up catalog-up ## Start, populate and schedule the OpenMetadata UI
+	@$(COMPOSE) exec -T airflow-api-server airflow dags unpause metadata_sync >/dev/null
+	@$(COMPOSE) exec -T airflow-worker python /opt/kest/ops/catalog_sync.py
 
 catalog-down: bootstrap-env ## Stop optional OpenMetadata catalog services
+	@$(COMPOSE) exec -T airflow-api-server airflow dags pause metadata_sync >/dev/null || true
 	@$(COMPOSE) --profile catalog stop openmetadata-server opensearch
 
 failure-test: demo-up ## Run replay, retry, contract, publish and workload failures
 	@$(COMPOSE) run --rm tooling pytest -q tests/integration/test_failure_scenarios.py tests/security/test_rbac.py
 
 backup: bootstrap-env ## Back up critical PostgreSQL, ClickHouse and raw data
-	@bash ops/backup.sh
+	@python3 -m ops.backup
 
 restore-test: bootstrap-env ## Restore backup into isolated test targets and compare checksums
-	@bash ops/restore_test.sh
+	@python3 -m ops.restore_verify
 
 down: bootstrap-env ## Stop services while retaining persistent data
 	@$(COMPOSE) --profile catalog --profile demo --profile recovery down
@@ -88,7 +97,7 @@ dev-init: bootstrap-env ## Create an isolated ClickHouse database; DEVELOPER is 
 
 dbt-build: bootstrap-env ## Build dbt in an isolated dev database; DEVELOPER is required
 	@test -n "$(DEVELOPER)" || (echo "DEVELOPER is required" >&2; exit 2)
-	@$(COMPOSE) run --rm -e DEVELOPER="$(DEVELOPER)" tooling bash -ec 'test -f "/opt/kest/.runtime/developers/$${DEVELOPER}.env" || { echo "Run make dev-init DEVELOPER=$${DEVELOPER} first" >&2; exit 2; }; set -a; source "/opt/kest/.runtime/developers/$${DEVELOPER}.env"; set +a; exec /opt/venvs/dbt/bin/dbt build --project-dir transformations --profiles-dir transformations --target dev'
+	@$(COMPOSE) run --rm tooling python ops/dbt_dev.py --developer "$(DEVELOPER)"
 
 credentials: bootstrap-env ## Show local UI endpoints and generated usernames/passwords
 	@python3 ops/show_credentials.py

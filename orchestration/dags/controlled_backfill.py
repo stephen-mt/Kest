@@ -1,25 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import datetime
 
-from _common import DEFAULT_ARGS, cli_task
-from airflow.sdk import DAG, Param, task
-
-
-@task(pool="heavy_backfill", retries=0)
-def validate_window(**context) -> None:
-    params = context["params"]
-    start = date.fromisoformat(params["start"])
-    end = date.fromisoformat(params["end"])
-    if start > end:
-        raise ValueError("start must not be after end")
-    if end > datetime.now(UTC).date():
-        raise ValueError("future backfills are not allowed")
-    if (end - start).days > 366:
-        raise ValueError("backfill window exceeds the 366-day local policy")
-    if not params["reason"].strip():
-        raise ValueError("reason is required")
-
+from _common import DEFAULT_ARGS, run_backfill_task, task_options
+from airflow.sdk import DAG, Param
 
 with DAG(
     dag_id="controlled_backfill",
@@ -28,6 +12,7 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
+    render_template_as_native_obj=True,
     params={
         "source": Param("postgres", enum=["postgres", "campaigns", "campaign_spend", "product_catalog"]),
         "start": Param("2026-01-01", type="string", format="date"),
@@ -37,11 +22,10 @@ with DAG(
     },
     tags=["kest", "backfill"],
 ) as dag:
-    checked = validate_window()
-    run = cli_task(
-        "run_backfill",
-        "pipeline --backfill-source '{{ params.source }}' --start '{{ params.start }}' --end '{{ params.end }}' --reason '{{ params.reason }}' {{ '--dry-run' if params.dry_run else '' }}",
-        "heavy_backfill",
-        120,
+    run_backfill_task.override(task_id="run_backfill", **task_options("heavy_backfill", 120))(
+        source="{{ params.source }}",
+        start="{{ params.start }}",
+        end="{{ params.end }}",
+        reason="{{ params.reason }}",
+        dry_run="{{ params.dry_run }}",
     )
-    checked >> run

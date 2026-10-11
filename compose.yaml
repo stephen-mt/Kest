@@ -21,13 +21,13 @@ x-airflow-common: &airflow-common
     AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
     AIRFLOW__CORE__DAGS_FOLDER: /opt/kest/orchestration/dags
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "8"
     AIRFLOW__CELERY__WORKER_CONCURRENCY: ${AIRFLOW_WORKER_CONCURRENCY:-3}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
-    PYTHONPATH: /opt/kest/ingestion:/opt/kest/orchestration
+    PYTHONPATH: /opt/kest:/opt/kest/ingestion:/opt/kest/orchestration
     DBT_TARGET_PATH: /opt/kest/.runtime/dbt/target
     DBT_LOG_PATH: /opt/kest/.runtime/dbt/logs
     PYTHON_DOTENV_DISABLED: "1"
@@ -232,21 +232,7 @@ services:
   airflow-init:
     <<: *airflow-common
     restart: "no"
-    command:
-      - bash
-      - -ec
-      - |
-        airflow db migrate
-        airflow users create --username "$${AIRFLOW_ADMIN_USER}" --password "$${AIRFLOW_ADMIN_PASSWORD}" --firstname Kest --lastname Admin --role Admin --email airflow@kest.local || true
-        airflow pools set source_ingestion 3 'Source API and database extraction'
-        airflow pools set clickhouse_transform 2 'ClickHouse and dbt transformations'
-        airflow pools set gold_publish 1 'Serialized Gold publication'
-        airflow pools set heavy_backfill 1 'Resource-capped historical rebuilds'
-        airflow pools set catalog_sync 1 'OpenMetadata synchronization'
-        airflow dags reserialize
-        for dag in source_ingestion transform_publish controlled_backfill ecommerce_end_to_end; do
-          airflow dags unpause "$${dag}"
-        done
+    command: ["python", "/opt/kest/ops/airflow_init.py"]
 
   airflow-api-server:
     <<: *airflow-common
@@ -295,14 +281,7 @@ services:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SUPERSET_DATABASE_URI: postgresql+psycopg2://superset:${SUPERSET_DB_PASSWORD}@postgres:5432/superset
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-    command:
-      - /bin/bash
-      - -ec
-      - |
-        superset db upgrade
-        superset fab create-admin --username "$${SUPERSET_ADMIN_USER}" --firstname Kest --lastname Admin --email admin@kest.local --password "$${SUPERSET_ADMIN_PASSWORD}" || true
-        superset init
-        python /opt/kest/serving/bootstrap_superset.py
+    command: ["python", "/opt/kest/ops/superset_init.py"]
     volumes: ["./:/opt/kest:ro"]
     depends_on:
       postgres:

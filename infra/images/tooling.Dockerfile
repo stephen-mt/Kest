@@ -6,7 +6,7 @@ RUN apt-get update \
 WORKDIR /opt/kest
 COPY pyproject.toml /opt/kest/pyproject.toml
 COPY ingestion /opt/kest/ingestion
-RUN python -m pip install --no-cache-dir --upgrade pip \
+RUN python -m pip install --no-cache-dir "pip==26.2.1" \
     && python -m pip install --no-cache-dir -e '.[test]' \
     && python -m venv /opt/venvs/dbt \
     && /opt/venvs/dbt/bin/pip install --no-cache-dir \
