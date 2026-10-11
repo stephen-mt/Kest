@@ -135,7 +135,58 @@ def load_batch(settings: Settings, batch_id: str) -> bool:
             client = clickhouse_client(settings, "pipeline")
             for table, objects in grouped.items():
                 if table not in RAW_COLUMNS:
-                    raise ValueError(f"Raw table is not allow-listed: {table}")
+                    expected = sum(item[2] for item in objects)
+                    existing = client.query(
+                        "SELECT count() FROM raw.source_records "
+                        "WHERE batch_id = toUUID(%(batch_id)s) AND table_name = %(table)s",
+                        parameters={"batch_id": batch_id, "table": table},
+                    ).first_row[0]
+                    if existing == expected:
+                        continue
+                    if existing:
+                        raise RuntimeError(
+                            f"Partial immutable batch exists for raw source {table}: {existing}/{expected}"
+                        )
+                    generic_rows: list[list[Any]] = []
+                    for path, checksum, _ in objects:
+                        for record in _download_rows(settings, path, checksum):
+                            source_updated = record.get("updated_at") or record.get("occurred_at")
+                            if source_updated is None:
+                                raise ValueError(f"{table} record has no source timestamp")
+                            payload = json.dumps(record, sort_keys=True, default=str, separators=(",", ":"))
+                            generic_rows.append(
+                                [
+                                    source,
+                                    table,
+                                    payload,
+                                    batch_id,
+                                    _coerce("updated_at", source_updated),
+                                    datetime.now(UTC),
+                                    hashlib.sha256(payload.encode()).hexdigest(),
+                                ]
+                            )
+                    client.insert(
+                        "raw.source_records",
+                        generic_rows,
+                        column_names=[
+                            "source",
+                            "table_name",
+                            "record_json",
+                            "batch_id",
+                            "source_updated_at",
+                            "ingested_at",
+                            "record_hash",
+                        ],
+                        settings={"insert_deduplication_token": f"{batch_id}:{table}"},
+                    )
+                    loaded = client.query(
+                        "SELECT count() FROM raw.source_records "
+                        "WHERE batch_id = toUUID(%(batch_id)s) AND table_name = %(table)s",
+                        parameters={"batch_id": batch_id, "table": table},
+                    ).first_row[0]
+                    if loaded != expected:
+                        raise RuntimeError(f"Raw count mismatch for {table}: {loaded}/{expected}")
+                    continue
                 expected = sum(item[2] for item in objects)
                 existing = client.query(
                     f"SELECT count() FROM raw.{table} WHERE batch_id = toUUID(%(batch_id)s)",

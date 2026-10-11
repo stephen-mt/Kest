@@ -8,15 +8,15 @@ models:
       freshness_expectation: 26 hours
       canonical_metrics: [captured_revenue, refunded_revenue, net_revenue]
     columns:
+      - name: grain_key
+        description: "Stable technical key for the order_date + currency grain."
+        data_tests: [unique, not_null]
       - name: order_date
         data_tests: [not_null]
       - name: currency
         data_tests: [not_null]
       - name: net_revenue
         data_tests: [not_null]
-    data_tests:
-      - unique:
-          column_name: "concat(toString(order_date), ':', currency)"
   - name: mart_conversion_funnel
     description: "Daily campaign funnel and canonical spend at event_date + campaign_id grain."
     meta:

@@ -1,4 +1,4 @@
-FROM apache/airflow:3.3.2-python3.12
+FROM apache/airflow:3.3.2-python3.12@sha256:9df9c8be4096b9cc626bd7cb1f2b8c712eef66c59c615f8c7e6200871ca10bd1
 
 ARG AIRFLOW_VERSION=3.3.2
 ARG PYTHON_VERSION=3.12
@@ -23,7 +23,7 @@ RUN python -m venv /opt/venvs/ingestion \
     && /opt/venvs/ingestion/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venvs/ingestion/bin/pip install --no-cache-dir \
       "boto3==1.40.40" \
-      "clickhouse-connect==0.9.2" \
+      "clickhouse-connect==1.10.0" \
       "dlt[filesystem]==1.31.0" \
       "httpx==0.28.1" \
       "psycopg[binary]==3.2.10" \
@@ -41,7 +41,8 @@ RUN python -m venv /opt/venvs/dbt \
 RUN python -m venv /opt/venvs/metadata \
     && /opt/venvs/metadata/bin/pip install --no-cache-dir --upgrade pip \
     && /opt/venvs/metadata/bin/pip install --no-cache-dir \
-      "openmetadata-ingestion[clickhouse,dbt,airflow,superset]==2.0.5.0"
+      "openmetadata-ingestion[clickhouse,dbt,airflow,postgres,superset]==2.0.5.0" \
+      "psycopg2-binary==2.9.11"
 
 ENV PYTHONPATH=/opt/kest/ingestion:/opt/kest/orchestration
 WORKDIR /opt/kest

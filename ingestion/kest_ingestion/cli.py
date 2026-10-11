@@ -7,14 +7,14 @@ import secrets
 import subprocess
 import sys
 import uuid
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-import httpx
 import yaml
 
 from kest_ingestion.config import ROOT, Settings, require_secrets
 from kest_ingestion.db import business_connection, clickhouse_client, control_connection
-from kest_ingestion.ingest import ensure_raw_bucket, ingest_all
+from kest_ingestion.ingest import ensure_raw_bucket, ingest_all, reconcile_hard_deletes
 from kest_ingestion.loader import load_pending
 from kest_ingestion.models import SourceConfig
 from kest_ingestion.publish import MARTS, publish_all
@@ -87,10 +87,7 @@ def health(settings: Settings) -> None:
     client = clickhouse_client(settings, "pipeline")
     checks["clickhouse"] = "ok" if client.query("SELECT 1").first_row[0] == 1 else "failed"
     ensure_raw_bucket(settings)
-    checks["seaweed_s3"] = "ok"
-    response = httpx.get(f"{settings.source_api_url}/health", timeout=5)
-    response.raise_for_status()
-    checks["source_api"] = "ok"
+    checks["object_store"] = "ok"
     print(json.dumps(checks, indent=2))
 
 
@@ -149,10 +146,28 @@ def dev_init(settings: Settings, developer: str) -> None:
     print(json.dumps({"database": database, "user": user, "credentials_file": str(credentials_file)}))
 
 
-def validate_configs() -> None:
-    for path in sorted((ROOT / "ingestion" / "config").glob("*.yml")):
+def validate_configs(settings: Settings) -> None:
+    for path in sorted(settings.source_config_dir.glob("*.yml")):
         SourceConfig.model_validate(yaml.safe_load(path.read_text()))
     print("source configuration: valid")
+
+
+def _validate_backfill(source: str, start_value: str | None, end_value: str | None, reason: str | None) -> None:
+    allowed = {"postgres", "campaigns", "campaign_spend", "product_catalog"}
+    if source not in allowed:
+        raise ValueError(f"source must be one of: {', '.join(sorted(allowed))}")
+    if not start_value or not end_value:
+        raise ValueError("start and end are required for a backfill")
+    start = date.fromisoformat(start_value)
+    end = date.fromisoformat(end_value)
+    if start > end:
+        raise ValueError("start must not be after end")
+    if end > datetime.now(UTC).date():
+        raise ValueError("future backfills are not allowed")
+    if (end - start).days > 366:
+        raise ValueError("backfill window exceeds the 366-day local policy")
+    if not reason or len(reason.strip()) < 3:
+        raise ValueError("reason must contain at least three characters")
 
 
 def main() -> None:
@@ -172,6 +187,7 @@ def main() -> None:
     commands.add_parser("health")
     commands.add_parser("smoke")
     commands.add_parser("late-refund")
+    commands.add_parser("reconcile")
     commands.add_parser("validate-config")
     dev = commands.add_parser("dev-init")
     dev.add_argument("--developer", required=True)
@@ -196,6 +212,8 @@ def main() -> None:
             _finish_run(settings, run_id, "FAILED", str(error))
             raise
     elif args.command == "pipeline":
+        if args.backfill_source:
+            _validate_backfill(args.backfill_source, args.start, args.end, args.reason)
         if args.backfill_source and args.dry_run:
             print(
                 json.dumps(
@@ -217,10 +235,14 @@ def main() -> None:
         smoke(settings)
     elif args.command == "late-refund":
         add_late_refund(settings)
+    elif args.command == "reconcile":
+        result = reconcile_hard_deletes(settings)
+        loaded = load_pending(settings) if result else []
+        print(json.dumps({"batch": result.batch_id if result else None, "loaded": loaded}, indent=2))
     elif args.command == "dev-init":
         dev_init(settings, args.developer)
     elif args.command == "validate-config":
-        validate_configs()
+        validate_configs(settings)
 
 
 if __name__ == "__main__":

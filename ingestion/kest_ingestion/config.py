@@ -19,12 +19,15 @@ class Settings:
     clickhouse_pipeline_password: str = os.getenv("CLICKHOUSE_PIPELINE_PASSWORD", "")
     clickhouse_publish_password: str = os.getenv("CLICKHOUSE_PUBLISH_PASSWORD", "")
     clickhouse_da_password: str = os.getenv("CLICKHOUSE_DA_PASSWORD", "")
-    s3_endpoint: str = os.getenv("S3_ENDPOINT", "http://seaweed-s3:8333")
-    s3_writer_key: str = os.getenv("SEAWEED_WRITER_ACCESS_KEY", "")
-    s3_writer_secret: str = os.getenv("SEAWEED_WRITER_SECRET_KEY", "")
-    s3_reader_key: str = os.getenv("SEAWEED_READER_ACCESS_KEY", "")
-    s3_reader_secret: str = os.getenv("SEAWEED_READER_SECRET_KEY", "")
+    s3_endpoint: str = os.getenv("S3_ENDPOINT", "http://object-store:9000")
+    s3_writer_key: str = os.getenv("S3_WRITER_ACCESS_KEY", "")
+    s3_writer_secret: str = os.getenv("S3_WRITER_SECRET_KEY", "")
+    s3_reader_key: str = os.getenv("S3_READER_ACCESS_KEY", "")
+    s3_reader_secret: str = os.getenv("S3_READER_SECRET_KEY", "")
     source_api_url: str = os.getenv("SOURCE_API_URL", "http://source-api:8000")
+    source_config_dir: Path = Path(
+        os.getenv("SOURCE_CONFIG_DIR", str(ROOT / "ingestion" / "config"))
+    )
     runtime_dir: Path = Path(os.getenv("KEST_RUNTIME_DIR", str(ROOT / ".runtime")))
 
     @property
@@ -49,8 +52,8 @@ def require_secrets(settings: Settings) -> None:
             "BUSINESS_SOURCE_PASSWORD": settings.business_password,
             "PLATFORM_CONTROL_PASSWORD": settings.control_password,
             "CLICKHOUSE_PIPELINE_PASSWORD": settings.clickhouse_pipeline_password,
-            "SEAWEED_WRITER_ACCESS_KEY": settings.s3_writer_key,
-            "SEAWEED_WRITER_SECRET_KEY": settings.s3_writer_secret,
+            "S3_WRITER_ACCESS_KEY": settings.s3_writer_key,
+            "S3_WRITER_SECRET_KEY": settings.s3_writer_secret,
         }.items()
         if not value
     ]

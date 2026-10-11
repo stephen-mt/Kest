@@ -12,6 +12,7 @@ with DAG(
     default_args=DEFAULT_ARGS,
     tags=["kest", "ingestion"],
 ) as dag:
-    cli_task("ingest_sources", "ingest", "source_ingestion") >> cli_task(
-        "load_raw", "load", "source_ingestion"
-    )
+    ingest = cli_task("ingest_sources", "ingest", "source_ingestion")
+    load = cli_task("load_raw", "load", "source_ingestion")
+    reconcile = cli_task("reconcile_hard_deletes", "reconcile", "source_ingestion")
+    ingest >> load >> reconcile

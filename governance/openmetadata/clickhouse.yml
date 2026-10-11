@@ -7,7 +7,9 @@ source:
       username: metadata_reader
       password: ${CLICKHOUSE_METADATA_PASSWORD}
       hostPort: clickhouse:8123
-      databaseSchema: gold
+      schemaFilterPattern:
+        includes:
+          - ^(raw|staging|core|gold)$
   sourceConfig:
     config:
       type: DatabaseMetadata

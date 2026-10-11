@@ -40,7 +40,7 @@ def test_gold_is_queryable_and_manifested() -> None:
         assert cur.fetchone()[0] == 3
 
 
-def test_seaweed_reader_policy_and_round_trip() -> None:
+def test_object_store_reader_policy_and_round_trip() -> None:
     settings = Settings()
     writer = _s3_client(settings)
     reader = _s3_client(settings, writer=False)
@@ -50,5 +50,8 @@ def test_seaweed_reader_policy_and_round_trip() -> None:
         Bucket="raw", Key=key, Body=payload, Metadata={"sha256": hashlib.sha256(payload).hexdigest()}
     )
     assert reader.get_object(Bucket="raw", Key=key)["Body"].read() == payload
+    assert writer.get_bucket_versioning(Bucket="raw")["Status"] == "Enabled"
     with pytest.raises(ClientError):
         reader.put_object(Bucket="raw", Key=f"{key}.denied", Body=b"denied")
+    with pytest.raises(ClientError):
+        writer.delete_object(Bucket="raw", Key=key)

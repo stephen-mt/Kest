@@ -10,9 +10,10 @@ from kest_ingestion.publish import publish_mart
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.demo
 def test_rest_429_retries_without_duplicate_manifest() -> None:
     settings = Settings()
-    config = ROOT / "ingestion" / "config" / "campaigns.yml"
+    config = ROOT / "ingestion" / "examples" / "config" / "campaigns.yml"
     with control_connection(settings) as conn, conn.cursor() as cur:
         cur.execute("SELECT count(*), max(batch_id::text) FROM batch_manifest WHERE source='campaigns'")
         before = cur.fetchone()

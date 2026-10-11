@@ -5,7 +5,6 @@ profile: kest
 model-paths: [models]
 test-paths: [tests]
 macro-paths: [macros]
-target-path: ../.runtime/dbt/target
 clean-targets: [../.runtime/dbt/target, ../.runtime/dbt/packages]
 models:
   kest:

@@ -1,4 +1,5 @@
 select
+  concat(toString(order_date), ':', currency) grain_key,
   order_date,
   currency,
   countIf(paid_amount > 0) paid_orders,

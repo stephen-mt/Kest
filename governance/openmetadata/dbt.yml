@@ -5,9 +5,15 @@ source:
     config:
       type: DBT
       dbtConfigSource:
-        dbtCatalogFilePath: /opt/kest/.runtime/dbt/target/catalog.json
-        dbtManifestFilePath: /opt/kest/.runtime/dbt/target/manifest.json
-        dbtRunResultsFilePath: /opt/kest/.runtime/dbt/target/run_results.json
+        dbtConfigType: local
+        dbtCatalogFilePath: /tmp/kest-dbt-metadata/catalog.json
+        dbtManifestFilePath: /tmp/kest-dbt-metadata/manifest.json
+        dbtRunResultsFilePath: /tmp/kest-dbt-metadata/run_results.json
+      searchAcrossDatabases: true
+      dbtUpdateDescriptions: true
+      dbtUpdateOwners: true
+      includeTags: true
+      includeMetrics: true
 sink:
   type: metadata-rest
   config: {}

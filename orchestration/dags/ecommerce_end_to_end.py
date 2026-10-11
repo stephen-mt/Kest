@@ -9,7 +9,9 @@ from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig
 with DAG(
     dag_id="ecommerce_end_to_end",
     start_date=datetime(2026, 1, 1),
-    schedule="0 2 * * *",
+    # Source schedules are an explicit operator decision. The bundled workload
+    # is a demo and must never start writing merely because the platform starts.
+    schedule=None,
     catchup=False,
     max_active_runs=1,
     default_args=DEFAULT_ARGS,
@@ -17,6 +19,7 @@ with DAG(
 ) as dag:
     ingest = cli_task("ingest_sources", "ingest", "source_ingestion")
     load = cli_task("load_raw", "load", "source_ingestion")
+    reconcile = cli_task("reconcile_hard_deletes", "reconcile", "source_ingestion")
     transform = DbtTaskGroup(
         group_id="dbt_build_candidate",
         project_config=ProjectConfig("/opt/kest/transformations"),
@@ -34,4 +37,4 @@ with DAG(
     )
     publish = cli_task("publish_gold", "publish", "gold_publish")
     smoke = cli_task("business_smoke", "smoke", "clickhouse_transform")
-    ingest >> load >> transform >> publish >> smoke
+    ingest >> load >> reconcile >> transform >> publish >> smoke

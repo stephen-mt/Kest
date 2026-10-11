@@ -1,0 +1,14 @@
+# Copy this file into ingestion/config/<source>.yml and edit only values.
+# It intentionally follows the fields used by dlt's REST pagination model.
+name: example_api
+base_url: http://source-api:8000
+endpoint: /example
+table_name: example_records
+primary_key: record_id
+updated_at: updated_at
+data_path: items
+cursor_param: cursor
+next_cursor_path: next_cursor
+page_size: 100
+timeout_seconds: 10
+max_retries: 4

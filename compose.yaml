@@ -8,6 +8,8 @@ x-airflow-common: &airflow-common
   env_file: [.env]
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__FAB__CONFIG_FILE: /opt/kest/infra/airflow/webserver_config.py
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
@@ -19,12 +21,16 @@ x-airflow-common: &airflow-common
     AIRFLOW__API__BASE_URL: http://airflow-api-server:8080
     AIRFLOW__CORE__DAGS_FOLDER: /opt/kest/orchestration/dags
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
     AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "8"
     AIRFLOW__CELERY__WORKER_CONCURRENCY: ${AIRFLOW_WORKER_CONCURRENCY:-3}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
     PYTHONPATH: /opt/kest/ingestion:/opt/kest/orchestration
+    DBT_TARGET_PATH: /opt/kest/.runtime/dbt/target
+    DBT_LOG_PATH: /opt/kest/.runtime/dbt/logs
+    PYTHON_DOTENV_DISABLED: "1"
   volumes:
     - ./:/opt/kest:ro
     - ./.runtime:/opt/kest/.runtime
@@ -36,21 +42,23 @@ x-airflow-common: &airflow-common
       condition: service_healthy
     clickhouse:
       condition: service_healthy
-    seaweed-s3:
-      condition: service_healthy
+    object-store-init:
+      condition: service_completed_successfully
   networks: [control, data]
   restart: unless-stopped
 
 services:
   postgres:
-    image: postgres:17.9-bookworm
+    image: postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
     env_file: [.env]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
       POSTGRES_DB: postgres
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # PostgreSQL 18 stores versioned clusters below this mount. The former
+      # postgres-data volume is intentionally left untouched for rollback.
+      - postgres-data-v18:/var/lib/postgresql
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     ports: ["127.0.0.1:5432:5432"]
     healthcheck:
@@ -63,7 +71,7 @@ services:
     mem_limit: 768m
 
   redis:
-    image: redis:8.10.1-trixie
+    image: redis:8.10.1-trixie@sha256:8a1efc5f479551822b47424ccae982026b633f28818eab0387348120a61e10e2
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     volumes: ["redis-data:/data"]
     healthcheck:
@@ -77,73 +85,63 @@ services:
     restart: unless-stopped
     mem_limit: 384m
 
-  seaweed-master:
-    image: chrislusf/seaweedfs:4.48
-    command: ["master", "-ip=seaweed-master", "-ip.bind=0.0.0.0", "-mdir=/data"]
-    volumes: ["seaweed-master-data:/data"]
+  object-store:
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ADMIN_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_ADMIN_SECRET_KEY}
+    volumes: ["silo-data:/data"]
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9333/cluster/status"]
+      test: ["CMD", "silo", "healthcheck", "ready"]
       interval: 5s
-      timeout: 3s
-      retries: 20
+      timeout: 5s
+      retries: 30
     networks: [data]
     restart: unless-stopped
-    mem_limit: 256m
+    mem_limit: 768m
 
-  seaweed-volume:
-    image: chrislusf/seaweedfs:4.48
-    command: ["volume", "-mserver=seaweed-master:9333", "-ip=seaweed-volume", "-ip.bind=0.0.0.0", "-dir=/data", "-max=20"]
-    volumes: ["seaweed-volume-data:/data"]
-    depends_on:
-      seaweed-master:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/status"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    networks: [data]
-    restart: unless-stopped
-    mem_limit: 512m
-
-  seaweed-filer:
-    image: chrislusf/seaweedfs:4.48
-    command: ["filer", "-master=seaweed-master:9333", "-ip=seaweed-filer", "-ip.bind=0.0.0.0"]
-    volumes: ["seaweed-filer-data:/data"]
-    depends_on:
-      seaweed-master:
-        condition: service_healthy
-      seaweed-volume:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8888/"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    networks: [data]
-    restart: unless-stopped
-    mem_limit: 512m
-
-  seaweed-s3:
-    image: chrislusf/seaweedfs:4.48
-    command: ["s3", "-filer=seaweed-filer:8888", "-ip.bind=0.0.0.0", "-config=/etc/seaweedfs/s3.json"]
+  object-store-init:
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mcli alias set local http://object-store:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mcli mb --ignore-existing local/raw
+        mcli mb --ignore-existing local/restore-verify
+        mcli mb --ignore-existing local/platform-backups
+        mcli version enable local/raw
+        mcli admin policy create local kest-raw-writer /policies/writer-policy.json
+        mcli admin policy create local kest-raw-reader /policies/reader-policy.json
+        mcli admin policy create local kest-platform-backup /policies/backup-policy.json
+        mcli admin user add local "$${S3_WRITER_ACCESS_KEY}" "$${S3_WRITER_SECRET_KEY}" || mcli admin user enable local "$${S3_WRITER_ACCESS_KEY}"
+        mcli admin user add local "$${S3_READER_ACCESS_KEY}" "$${S3_READER_SECRET_KEY}" || mcli admin user enable local "$${S3_READER_ACCESS_KEY}"
+        mcli admin user add local "$${S3_BACKUP_ACCESS_KEY}" "$${S3_BACKUP_SECRET_KEY}" || mcli admin user enable local "$${S3_BACKUP_ACCESS_KEY}"
+        mcli admin policy attach local kest-raw-writer --user "$${S3_WRITER_ACCESS_KEY}"
+        mcli admin policy attach local kest-raw-reader --user "$${S3_READER_ACCESS_KEY}"
+        mcli admin policy attach local kest-platform-backup --user "$${S3_BACKUP_ACCESS_KEY}"
+    environment:
+      MINIO_ROOT_USER: ${S3_ADMIN_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_ADMIN_SECRET_KEY}
+      S3_WRITER_ACCESS_KEY: ${S3_WRITER_ACCESS_KEY}
+      S3_WRITER_SECRET_KEY: ${S3_WRITER_SECRET_KEY}
+      S3_READER_ACCESS_KEY: ${S3_READER_ACCESS_KEY}
+      S3_READER_SECRET_KEY: ${S3_READER_SECRET_KEY}
+      S3_BACKUP_ACCESS_KEY: ${S3_BACKUP_ACCESS_KEY}
+      S3_BACKUP_SECRET_KEY: ${S3_BACKUP_SECRET_KEY}
     volumes:
-      - ./.runtime/seaweed/s3.json:/etc/seaweedfs/s3.json:ro
-    ports: ["127.0.0.1:8333:8333"]
+      - ./.runtime/object-store:/policies:ro
     depends_on:
-      seaweed-filer:
+      object-store:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8333/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
     networks: [data]
-    restart: unless-stopped
-    mem_limit: 384m
+    restart: "no"
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.8.22.13
+    image: clickhouse/clickhouse-server:26.9.14.10@sha256:4dcecd874534d2ab0b13695610b7085b64451c8d01ecb0771d4a2a227c094617
     env_file: [.env]
     environment:
       CLICKHOUSE_DB: default
@@ -151,12 +149,14 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     volumes:
-      - clickhouse-data:/var/lib/clickhouse
+      # Keep the former ClickHouse volume untouched across the stable-version
+      # boundary; control manifests and raw data must start from one epoch.
+      - clickhouse-data-v26:/var/lib/clickhouse
       - ./infra/clickhouse/init:/docker-entrypoint-initdb.d:ro
       - ./infra/clickhouse/config/settings.xml:/etc/clickhouse-server/config.d/kest-settings.xml:ro
     ports:
       - "127.0.0.1:8123:8123"
-      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9002:9000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --user=default --password='$${CLICKHOUSE_ADMIN_PASSWORD}' 'http://localhost:8123/ping' | grep Ok"]
       interval: 5s
@@ -166,11 +166,30 @@ services:
     restart: unless-stopped
     mem_limit: ${CLICKHOUSE_MEMORY_LIMIT:-4g}
 
+  clickhouse-restore:
+    image: clickhouse/clickhouse-server:26.9.14.10@sha256:4dcecd874534d2ab0b13695610b7085b64451c8d01ecb0771d4a2a227c094617
+    profiles: [recovery]
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes: ["clickhouse-restore-data:/var/lib/clickhouse"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --user=default --password='$${CLICKHOUSE_ADMIN_PASSWORD}' 'http://localhost:8123/ping' | grep Ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [data]
+    restart: "no"
+    mem_limit: 2g
+
   source-api:
     build:
       context: .
       dockerfile: infra/images/tooling.Dockerfile
     image: kest-tooling:0.1.0
+    profiles: [demo]
     env_file: [.env]
     command: ["uvicorn", "source_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes: ["./:/opt/kest:ro"]
@@ -195,6 +214,9 @@ services:
     env_file: [.env]
     environment:
       PYTHONPATH: /opt/kest/ingestion
+      DBT_TARGET_PATH: /opt/kest/.runtime/dbt/target
+      DBT_LOG_PATH: /opt/kest/.runtime/dbt/logs
+      PYTHON_DOTENV_DISABLED: "1"
     volumes: ["./:/opt/kest"]
     working_dir: /opt/kest
     depends_on:
@@ -202,8 +224,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-      seaweed-s3:
-        condition: service_healthy
+      object-store-init:
+        condition: service_completed_successfully
     networks: [control, data]
     profiles: [tools]
 
@@ -215,11 +237,16 @@ services:
       - -ec
       - |
         airflow db migrate
+        airflow users create --username "$${AIRFLOW_ADMIN_USER}" --password "$${AIRFLOW_ADMIN_PASSWORD}" --firstname Kest --lastname Admin --role Admin --email airflow@kest.local || true
         airflow pools set source_ingestion 3 'Source API and database extraction'
         airflow pools set clickhouse_transform 2 'ClickHouse and dbt transformations'
         airflow pools set gold_publish 1 'Serialized Gold publication'
         airflow pools set heavy_backfill 1 'Resource-capped historical rebuilds'
         airflow pools set catalog_sync 1 'OpenMetadata synchronization'
+        airflow dags reserialize
+        for dag in source_ingestion transform_publish controlled_backfill ecommerce_end_to_end; do
+          airflow dags unpause "$${dag}"
+        done
 
   airflow-api-server:
     <<: *airflow-common
@@ -328,7 +355,7 @@ services:
     mem_limit: 768m
 
   opensearch:
-    image: opensearchproject/opensearch:3.2.0
+    image: opensearchproject/opensearch:3.9.0@sha256:adfa61f85025d06b4aeb562e7e74fde7e31c437039c93c3862c17e9acebd6c7c
     profiles: [catalog]
     environment:
       discovery.type: single-node
@@ -344,7 +371,7 @@ services:
     mem_limit: 1536m
 
   openmetadata-migrate:
-    image: docker.getcollate.io/openmetadata/server:2.0.5
+    image: docker.getcollate.io/openmetadata/server:2.0.5@sha256:ede23602d8e7cc2447e14f67b36d8ee2e468671fb3157a39e776ecfd6d7cc11b
     profiles: [catalog]
     env_file: [.env]
     environment: &om-env
@@ -362,8 +389,9 @@ services:
       ELASTICSEARCH_CLUSTER_ALIAS: openmetadata
       SEARCH_TYPE: opensearch
       AUTHENTICATION_PROVIDER: basic
+      PIPELINE_SERVICE_CLIENT_ENABLED: "false"
       SERVER_HOST_API_URL: http://openmetadata-server:8585/api
-    command: ["./bootstrap/bootstrap_storage.sh", "migrate-all"]
+    command: ["./bootstrap/openmetadata-ops.sh", "migrate"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -373,7 +401,7 @@ services:
     restart: "no"
 
   openmetadata-server:
-    image: docker.getcollate.io/openmetadata/server:2.0.5
+    image: docker.getcollate.io/openmetadata/server:2.0.5@sha256:ede23602d8e7cc2447e14f67b36d8ee2e468671fb3157a39e776ecfd6d7cc11b
     profiles: [catalog]
     env_file: [.env]
     environment: *om-env
@@ -382,7 +410,7 @@ services:
         condition: service_completed_successfully
     ports: ["127.0.0.1:8585:8585"]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8585/healthcheck"]
+      test: ["CMD-SHELL", "bash -ec \"exec 3<>/dev/tcp/127.0.0.1/8585; printf 'GET /healthcheck HTTP/1.0\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3\""]
       interval: 15s
       timeout: 5s
       retries: 40
@@ -397,11 +425,10 @@ networks:
     internal: false
 
 volumes:
-  postgres-data:
+  postgres-data-v18:
   redis-data:
-  clickhouse-data:
-  seaweed-master-data:
-  seaweed-volume-data:
-  seaweed-filer-data:
+  clickhouse-data-v26:
+  clickhouse-restore-data:
+  silo-data:
   airflow-logs:
   opensearch-data:

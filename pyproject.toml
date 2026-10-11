@@ -9,7 +9,7 @@ description = "Production-like multi-user OSS data platform"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "boto3==1.40.40",
-  "clickhouse-connect==0.9.2",
+  "clickhouse-connect==1.10.0",
   "dlt[filesystem]==1.31.0",
   "fastapi==0.117.1",
   "httpx==0.28.1",
@@ -37,6 +37,7 @@ testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
   "integration: requires the running Docker Compose core stack",
+  "demo: requires the optional source simulator profile",
   "security: validates permissions at the backing service",
   "recovery: destructive only inside isolated restore targets",
 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create local-only secrets and generated SeaweedFS configuration."""
+"""Create local-only secrets and generated S3 policies."""
 
 from __future__ import annotations
 
@@ -27,8 +27,32 @@ def parse_env(path: Path) -> dict[str, str]:
     return values
 
 
+def chmod_if_owned(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except PermissionError:
+        # A prior container may own an artifact directory. `make up` repairs
+        # shared runtime modes from a root tooling container after the build.
+        pass
+
+
+def mkdir_shared(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o777, parents=True, exist_ok=True)
+        chmod_if_owned(path, 0o777)
+    except PermissionError:
+        pass
+
+
 def main() -> None:
-    RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    RUNTIME.mkdir(mode=0o711, parents=True, exist_ok=True)
+    chmod_if_owned(RUNTIME, 0o711)
+    # These paths contain artifacts, not secrets, and are shared by host UID,
+    # root-run tooling and Airflow's unprivileged UID.
+    for shared_name in ("batches", "dlt", "dbt", "backups"):
+        mkdir_shared(RUNTIME / shared_name)
+    for shared_path in (RUNTIME / "dbt" / "target", RUNTIME / "dbt" / "logs"):
+        mkdir_shared(shared_path)
     values = parse_env(ENV_FILE)
     defaults = {
         "COMPOSE_PROJECT_NAME": "kest",
@@ -42,6 +66,8 @@ def main() -> None:
         "REDIS_PASSWORD": token(),
         "AIRFLOW_SECRET_KEY": token(48),
         "AIRFLOW_FERNET_KEY": "",
+        "AIRFLOW_ADMIN_USER": "admin",
+        "AIRFLOW_ADMIN_PASSWORD": token(),
         "SUPERSET_SECRET_KEY": token(48),
         "SUPERSET_ADMIN_USER": "admin",
         "SUPERSET_ADMIN_PASSWORD": token(),
@@ -50,10 +76,14 @@ def main() -> None:
         "CLICKHOUSE_PUBLISH_PASSWORD": token(),
         "CLICKHOUSE_DA_PASSWORD": token(),
         "CLICKHOUSE_METADATA_PASSWORD": token(),
-        "SEAWEED_WRITER_ACCESS_KEY": f"kestwriter{token(12)}",
-        "SEAWEED_WRITER_SECRET_KEY": token(40),
-        "SEAWEED_READER_ACCESS_KEY": f"kestreader{token(12)}",
-        "SEAWEED_READER_SECRET_KEY": token(40),
+        "S3_ADMIN_ACCESS_KEY": f"kestadmin{token(12)}",
+        "S3_ADMIN_SECRET_KEY": token(40),
+        "S3_WRITER_ACCESS_KEY": f"kestwriter{token(12)}",
+        "S3_WRITER_SECRET_KEY": token(40),
+        "S3_READER_ACCESS_KEY": f"kestreader{token(12)}",
+        "S3_READER_SECRET_KEY": token(40),
+        "S3_BACKUP_ACCESS_KEY": f"kestbackup{token(12)}",
+        "S3_BACKUP_SECRET_KEY": token(40),
         "PLATFORM_ALERT_WEBHOOK_URL": "",
         "CLICKHOUSE_MEMORY_LIMIT": "4g",
         "AIRFLOW_WORKER_CONCURRENCY": "3",
@@ -81,35 +111,80 @@ def main() -> None:
         ENV_FILE.write_text("\n".join(f"{key}={value}" for key, value in sorted(values.items())) + "\n")
         ENV_FILE.chmod(0o600)
 
-    seaweed_dir = RUNTIME / "seaweed"
-    seaweed_dir.mkdir(mode=0o700, exist_ok=True)
-    s3_config = {
-        "identities": [
-            {
-                "name": "pipeline-writer",
-                "credentials": [
-                    {
-                        "accessKey": values["SEAWEED_WRITER_ACCESS_KEY"],
-                        "secretKey": values["SEAWEED_WRITER_SECRET_KEY"],
-                    }
-                ],
-                "actions": ["Read:raw", "Write:raw", "List:raw", "Admin:raw"],
-            },
-            {
-                "name": "raw-reader",
-                "credentials": [
-                    {
-                        "accessKey": values["SEAWEED_READER_ACCESS_KEY"],
-                        "secretKey": values["SEAWEED_READER_SECRET_KEY"],
-                    }
-                ],
-                "actions": ["Read:raw", "List:raw"],
-            },
-        ]
+    policy_dir = RUNTIME / "object-store"
+    policy_dir.mkdir(mode=0o700, exist_ok=True)
+    chmod_if_owned(policy_dir, 0o700)
+    policies = {
+        "writer-policy.json": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetBucketLocation",
+                        "s3:GetBucketVersioning",
+                        "s3:ListBucket",
+                        "s3:ListBucketMultipartUploads",
+                    ],
+                    "Resource": ["arn:aws:s3:::raw", "arn:aws:s3:::restore-verify"],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject",
+                        "s3:AbortMultipartUpload",
+                        "s3:ListMultipartUploadParts",
+                    ],
+                    "Resource": ["arn:aws:s3:::raw/*", "arn:aws:s3:::restore-verify/*"],
+                },
+            ],
+        },
+        "reader-policy.json": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+                    "Resource": ["arn:aws:s3:::raw"],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["s3:GetObject"],
+                    "Resource": ["arn:aws:s3:::raw/*"],
+                },
+            ],
+        },
+        "backup-policy.json": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetBucketLocation",
+                        "s3:ListBucket",
+                        "s3:ListBucketMultipartUploads",
+                    ],
+                    "Resource": ["arn:aws:s3:::platform-backups"],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject",
+                        "s3:DeleteObject",
+                        "s3:AbortMultipartUpload",
+                        "s3:ListMultipartUploadParts",
+                    ],
+                    "Resource": ["arn:aws:s3:::platform-backups/*"],
+                },
+            ],
+        },
     }
-    config_file = seaweed_dir / "s3.json"
-    config_file.write_text(json.dumps(s3_config, indent=2) + "\n")
-    config_file.chmod(0o600)
+    for filename, policy in policies.items():
+        policy_file = policy_dir / filename
+        policy_file.write_text(json.dumps(policy, indent=2) + "\n")
+        policy_file.chmod(0o600)
 
 
 if __name__ == "__main__":

@@ -52,3 +52,14 @@ CREATE TABLE IF NOT EXISTS raw.product_catalog (
   updated_at DateTime64(3, 'UTC'), is_deleted Bool,
   batch_id UUID, source_updated_at DateTime64(3, 'UTC'), ingested_at DateTime64(3, 'UTC'), record_hash String
 ) ENGINE = MergeTree PARTITION BY toYYYYMM(updated_at) ORDER BY (product_id, updated_at, batch_id);
+
+-- Zero-glue landing zone for newly configured sources. Stable domain tables
+-- above keep strong types; a new REST source can land safely before a DE
+-- promotes its contract into a typed model.
+CREATE TABLE IF NOT EXISTS raw.source_records (
+  source LowCardinality(String), table_name LowCardinality(String), record_json String,
+  batch_id UUID, source_updated_at DateTime64(3, 'UTC'), ingested_at DateTime64(3, 'UTC'),
+  record_hash String
+) ENGINE = MergeTree
+PARTITION BY toYYYYMM(source_updated_at)
+ORDER BY (source, table_name, source_updated_at, record_hash, batch_id);

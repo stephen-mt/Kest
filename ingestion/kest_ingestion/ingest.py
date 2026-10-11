@@ -10,7 +10,7 @@ from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import boto3
 import dlt
@@ -21,7 +21,7 @@ from botocore.client import Config
 from dlt.destinations import filesystem
 
 from kest_ingestion.config import ROOT, Settings
-from kest_ingestion.db import business_connection, control_connection
+from kest_ingestion.db import business_connection, clickhouse_client, control_connection
 from kest_ingestion.models import BatchObject, BatchResult, SourceConfig, json_value
 
 POSTGRES_TABLES = {
@@ -31,6 +31,19 @@ POSTGRES_TABLES = {
     "payments": ("payment_id", "updated_at"),
     "refunds": ("refund_id", "updated_at"),
     "events": ("event_id", "occurred_at"),
+}
+
+DLT_COLUMN_HINTS: dict[str, dict[str, dict[str, Any]]] = {
+    "customers": {"country": {"data_type": "text", "nullable": True}},
+    "payments": {"succeeded_at": {"data_type": "timestamp", "nullable": True}},
+    "refunds": {"succeeded_at": {"data_type": "timestamp", "nullable": True}},
+    "events": {
+        "customer_id": {"data_type": "text", "nullable": True},
+        "product_id": {"data_type": "text", "nullable": True},
+        "campaign_id": {"data_type": "text", "nullable": True},
+    },
+    "marketing_campaigns": {"ends_at": {"data_type": "timestamp", "nullable": True}},
+    "product_catalog": {"unit_cost": {"data_type": "decimal", "nullable": True}},
 }
 
 
@@ -174,7 +187,11 @@ def ensure_raw_bucket(settings: Settings) -> None:
 
 
 def _as_resource(table_name: str, rows: Iterable[dict[str, Any]]):
-    @dlt.resource(name=table_name, write_disposition="append")
+    @dlt.resource(
+        name=table_name,
+        write_disposition="append",
+        columns=cast(Any, DLT_COLUMN_HINTS.get(table_name)),
+    )
     def records() -> Iterator[dict[str, Any]]:
         yield from rows
 
@@ -327,13 +344,50 @@ def ingest_csv(settings: Settings, path: Path | None = None) -> BatchResult | No
 
 
 def ingest_all(settings: Settings) -> list[BatchResult]:
-    paths = [
-        ROOT / "ingestion" / "config" / "campaigns.yml",
-        ROOT / "ingestion" / "config" / "campaign_spend.yml",
-    ]
+    # Every validated YAML file is a source. Adding a REST source does not
+    # require editing orchestration code.
+    paths = sorted(settings.source_config_dir.glob("*.yml"))
     results = [
         ingest_postgres(settings),
         *(ingest_rest(settings, path) for path in paths),
         ingest_csv(settings),
     ]
     return [result for result in results if result is not None]
+
+
+def reconcile_hard_deletes(settings: Settings) -> BatchResult | None:
+    """Emit audited tombstones for keys removed without a soft-delete update."""
+    client = clickhouse_client(settings, "pipeline")
+    tombstones: dict[str, list[dict[str, Any]]] = {}
+    now = datetime.now(UTC)
+    with business_connection(settings) as source_conn, source_conn.cursor() as source_cur:
+        for table, (primary_key, _) in POSTGRES_TABLES.items():
+            source_cur.execute(f'SELECT "{primary_key}" FROM "{table}"')
+            live_keys = {str(row[0]) for row in source_cur.fetchall()}
+            rows = client.query(
+                f"SELECT {primary_key} FROM raw.{table} GROUP BY {primary_key} "
+                "HAVING argMax(is_deleted, tuple(source_updated_at, ingested_at, record_hash)) = 0"
+            ).result_rows
+            missing = sorted({str(row[0]) for row in rows} - live_keys)
+            for key in missing:
+                columns = [
+                    row[0]
+                    for row in client.query(f"DESCRIBE TABLE raw.{table}").result_rows
+                    if row[0] not in {"batch_id", "source_updated_at", "ingested_at", "record_hash"}
+                ]
+                latest = client.query(
+                    f"SELECT {', '.join(columns)} FROM raw.{table} "
+                    f"WHERE {primary_key} = %(key)s "
+                    "ORDER BY source_updated_at DESC, ingested_at DESC, record_hash DESC LIMIT 1",
+                    parameters={"key": key},
+                ).first_row
+                record = dict(zip(columns, latest, strict=True))
+                record["is_deleted"] = True
+                record["updated_at"] = now
+                tombstones.setdefault(table, []).append(record)
+    return ingest_tables(
+        settings,
+        "postgres_reconciliation",
+        tombstones,
+        {"reconciled_at": now.isoformat(), "deleted_keys": sum(map(len, tombstones.values()))},
+    ) if tombstones else None

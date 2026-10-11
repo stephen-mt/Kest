@@ -1,0 +1,27 @@
+source:
+  type: airflow
+  serviceName: kest_airflow
+  serviceConnection:
+    config:
+      type: Airflow
+      hostPort: http://airflow-api-server:8080
+      numberOfStatus: 10
+      connection:
+        type: Postgres
+        username: airflow
+        authType:
+          password: ${AIRFLOW_DB_PASSWORD}
+        hostPort: postgres:5432
+        database: airflow
+  sourceConfig:
+    config:
+      type: PipelineMetadata
+sink:
+  type: metadata-rest
+  config: {}
+workflowConfig:
+  openMetadataServerConfig:
+    hostPort: http://openmetadata-server:8585/api
+    authProvider: openmetadata
+    securityConfig:
+      jwtToken: ${OPENMETADATA_INGESTION_TOKEN}
