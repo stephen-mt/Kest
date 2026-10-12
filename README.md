@@ -18,9 +18,17 @@ make da                    # Superset entry point for analysts
 The ecommerce data is only an acceptance fixture. `make demo` loads it; normal
 startup does not create or schedule demo workload.
 
-Local product surfaces are Airflow on `:8080`, Superset on `:8088`, the SILO
-console on `:9001`, ClickHouse diagnostics on `:8123/dashboard`, and
-OpenMetadata on `:8585`. Run `make credentials` to print local-only logins.
+## Local product surfaces
+
+| Product | Local URL | Daily use |
+| --- | --- | --- |
+| Apache Airflow | [http://127.0.0.1:8080](http://127.0.0.1:8080) | Run, schedule and inspect data pipelines |
+| Apache Superset | [http://127.0.0.1:8088](http://127.0.0.1:8088) | Explore data and use analyst dashboards |
+| SILO Console | [http://127.0.0.1:9001](http://127.0.0.1:9001) | Inspect raw objects and buckets |
+| ClickHouse Diagnostics | [http://127.0.0.1:8123/dashboard](http://127.0.0.1:8123/dashboard) | Inspect server health and query activity |
+| OpenMetadata | [http://127.0.0.1:8585](http://127.0.0.1:8585) | Find datasets, owners, tests and lineage |
+
+Run `make credentials` to print the local-only usernames and passwords.
 
 The supplied deployment is production-disciplined but single-host. It provides
 strong database roles, isolated DE databases, immutable versioned raw data,
