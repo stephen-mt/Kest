@@ -53,10 +53,18 @@ source-new: bootstrap-env ## Add REST source; requires SOURCE, BASE_URL and ENDP
 test: test-unit test-integration ## Run unit and integration suites
 
 test-unit: bootstrap-env ## Run fast unit and contract tests
-	@$(COMPOSE) run --rm tooling pytest -q tests/unit
+	@if [ -d tests/unit ]; then \
+		$(COMPOSE) run --rm tooling pytest -q tests/unit; \
+	else \
+		echo "Local test suite is not distributed with this repository."; \
+	fi
 
 test-integration: bootstrap-env ## Run integration tests against the running core stack
-	@$(COMPOSE) run --rm tooling pytest -q -m "not demo" tests/integration tests/security
+	@if [ -d tests/integration ] && [ -d tests/security ]; then \
+		$(COMPOSE) run --rm tooling pytest -q -m "not demo" tests/integration tests/security; \
+	else \
+		echo "Local test suite is not distributed with this repository."; \
+	fi
 
 smoke: bootstrap-env ## Verify the end-to-end business outcome
 	@$(COMPOSE) run --rm tooling python -m kest_ingestion.cli smoke
@@ -80,7 +88,11 @@ catalog-down: bootstrap-env ## Stop optional OpenMetadata catalog services
 	@$(COMPOSE) --profile catalog stop openmetadata-server opensearch
 
 failure-test: demo-up ## Run replay, retry, contract, publish and workload failures
-	@$(COMPOSE) run --rm tooling pytest -q tests/integration/test_failure_scenarios.py tests/security/test_rbac.py
+	@if [ -f tests/integration/test_failure_scenarios.py ] && [ -f tests/security/test_rbac.py ]; then \
+		$(COMPOSE) run --rm tooling pytest -q tests/integration/test_failure_scenarios.py tests/security/test_rbac.py; \
+	else \
+		echo "Local failure suite is not distributed with this repository."; \
+	fi
 
 backup: bootstrap-env ## Back up critical PostgreSQL, ClickHouse and raw data
 	@python3 -m ops.backup

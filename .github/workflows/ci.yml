@@ -26,10 +26,8 @@ jobs:
         run: docker compose build tooling
       - name: Lint and type-check
         run: |
-          docker compose run --rm --no-deps tooling ruff check ingestion orchestration tests ops serving
+          docker compose run --rm --no-deps tooling ruff check ingestion orchestration ops serving
           docker compose run --rm --no-deps tooling mypy ingestion ops serving
-      - name: Unit and contract tests
-        run: docker compose run --rm --no-deps tooling pytest -q tests/unit
 
   core-integration:
     runs-on: ubuntu-latest
@@ -41,7 +39,6 @@ jobs:
           make up
           make seed
           make pipeline
-          make test-integration
           make smoke
           make health
       - name: Validate Airflow DAG imports

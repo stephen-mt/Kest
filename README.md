@@ -5,7 +5,7 @@ sources and dbt models; analysts discover governed Gold datasets and build
 reports without touching infrastructure. Airflow operates the data path,
 OpenMetadata carries context and lineage, and Superset is the analyst surface.
 
-![Kest platform architecture](docs/assets/architecture.svg)
+![Data platform architecture](assets/platform-architecture.png)
 
 ```bash
 make up                    # core: Airflow, ClickHouse, SILO, Superset
@@ -17,13 +17,6 @@ make da                    # Superset entry point for analysts
 
 The ecommerce data is only an acceptance fixture. `make demo` loads it; normal
 startup does not create or schedule demo workload.
-
-- [Data Engineer cookbook](docs/de-cookbook.md)
-- [Data Analyst cookbook](docs/da-cookbook.md)
-- [Dev, staging, production and CI/CD](docs/environments.md)
-- [Operator runbook](docs/operations.md)
-- [Pinned component versions](docs/versions.md)
-- [Evidence from the last acceptance run](docs/implementation-status.md)
 
 Local product surfaces are Airflow on `:8080`, Superset on `:8088`, the SILO
 console on `:9001`, ClickHouse diagnostics on `:8123/dashboard`, and
