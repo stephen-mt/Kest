@@ -5,7 +5,7 @@ COMPOSE := docker compose --env-file .env -f compose.yaml
 
 .PHONY: help bootstrap-env up demo-up seed pipeline demo de da source-new test test-unit test-integration smoke health type \
 	catalog catalog-up catalog-sync catalog-down failure-test backup restore-test down dev-init dbt-build \
-	credentials dependency-check lint config migrate
+	credentials dependency-check lint config migrate rollback
 
 help:
 	@awk 'BEGIN {FS = ":.*## "; printf "Kest commands:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -100,6 +100,10 @@ backup: bootstrap-env ## Back up critical PostgreSQL, ClickHouse and raw data
 
 restore-test: bootstrap-env ## Restore backup into isolated test targets and compare checksums
 	@python3 -m ops.restore_verify
+
+rollback: bootstrap-env ## Plan or execute one audited mart rollback; set DATASET, PUBLICATION_ID, REASON and EXECUTE=1
+	@test -n "$(DATASET)" -a -n "$(PUBLICATION_ID)" -a -n "$(REASON)" || (echo "DATASET, PUBLICATION_ID and REASON are required" >&2; exit 2)
+	@$(COMPOSE) run --rm tooling python -m kest_ingestion.cli rollback --dataset "$(DATASET)" --publication-id "$(PUBLICATION_ID)" --reason "$(REASON)" $(if $(filter 1,$(EXECUTE)),--execute)
 
 down: bootstrap-env ## Stop services while retaining persistent data
 	@$(COMPOSE) --profile catalog --profile demo --profile recovery down

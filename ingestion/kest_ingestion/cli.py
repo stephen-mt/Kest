@@ -5,6 +5,7 @@ import argparse
 from kest_ingestion.config import Settings, require_secrets
 from kest_ingestion.ingest import ingest_all
 from kest_ingestion.loader import load_pending
+from kest_ingestion.publish import rollback_mart
 from kest_ingestion.seed import add_late_refund, seed_business_data
 from kest_ingestion.workflows import (
     dev_init,
@@ -44,6 +45,11 @@ def main() -> None:
     failed.add_argument("--dag-id", required=True)
     failed.add_argument("--orchestrator-run-id", required=True)
     failed.add_argument("--error", required=True)
+    rollback = commands.add_parser("rollback")
+    rollback.add_argument("--dataset", required=True)
+    rollback.add_argument("--publication-id", required=True)
+    rollback.add_argument("--reason", required=True)
+    rollback.add_argument("--execute", action="store_true")
     dev = commands.add_parser("dev-init")
     dev.add_argument("--developer", required=True)
     args = parser.parse_args()
@@ -87,6 +93,16 @@ def main() -> None:
         from kest_ingestion.workflows import fail_orchestrated_run
 
         fail_orchestrated_run(settings, args.dag_id, args.orchestrator_run_id, args.error)
+    elif args.command == "rollback":
+        emit(
+            rollback_mart(
+                settings,
+                args.dataset,
+                args.publication_id,
+                args.reason,
+                dry_run=not args.execute,
+            )
+        )
 
 
 if __name__ == "__main__":
