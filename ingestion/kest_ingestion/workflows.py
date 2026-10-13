@@ -20,7 +20,7 @@ import yaml
 
 from kest_ingestion.config import ROOT, Settings
 from kest_ingestion.db import business_connection, clickhouse_client, control_connection
-from kest_ingestion.ingest import ensure_raw_bucket, ingest_all, reconcile_hard_deletes
+from kest_ingestion.ingest import ensure_raw_bucket, ingest_all, ingest_backfill, reconcile_hard_deletes
 from kest_ingestion.loader import load_pending
 from kest_ingestion.models import SourceConfig
 from kest_ingestion.publish import MARTS, publish_all
@@ -108,6 +108,39 @@ def run_pipeline(settings: Settings) -> dict[str, object]:
         raise
 
 
+def run_backfill(
+    settings: Settings,
+    source: str,
+    start_value: str,
+    end_value: str,
+    reason: str,
+) -> dict[str, object]:
+    plan = validate_backfill(source, start_value, end_value, reason)
+    run_id = start_run(settings)
+    try:
+        batches = ingest_backfill(
+            settings,
+            source,
+            date.fromisoformat(start_value),
+            date.fromisoformat(end_value),
+        )
+        batch_ids = [batch.batch_id for batch in batches]
+        loaded = load_pending(settings, batch_ids)
+        run_dbt_build()
+        publications = publish_all(settings, run_id)
+        finish_run(settings, run_id, "SUCCESS")
+        return {
+            "run_id": run_id,
+            "backfill": plan,
+            "batches": batch_ids,
+            "loaded": loaded,
+            "publications": publications,
+        }
+    except Exception as error:
+        finish_run(settings, run_id, "FAILED", str(error)[:4000])
+        raise
+
+
 def health(settings: Settings) -> dict[str, str]:
     checks: dict[str, str] = {}
     with control_connection(settings) as conn, conn.cursor() as cur:
@@ -184,7 +217,11 @@ def validate_backfill(
     end_value: str | None,
     reason: str | None,
 ) -> dict[str, object]:
-    allowed = {"postgres", "campaigns", "campaign_spend", "product_catalog"}
+    configured = {
+        SourceConfig.model_validate(yaml.safe_load(path.read_text())).name
+        for path in Settings().source_config_dir.glob("*.yml")
+    }
+    allowed = {"postgres", "product_catalog", *configured}
     if source not in allowed:
         raise ValueError(f"source must be one of: {', '.join(sorted(allowed))}")
     if not start_value or not end_value:

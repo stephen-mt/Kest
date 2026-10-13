@@ -106,7 +106,7 @@ def business_smoke_task() -> None:
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)
 def run_backfill_task(source: str, start: str, end: str, reason: str, dry_run: bool) -> None:
     from kest_ingestion.config import Settings, require_secrets
-    from kest_ingestion.workflows import run_pipeline, validate_backfill
+    from kest_ingestion.workflows import run_backfill, validate_backfill
 
     plan = validate_backfill(source, start, end, reason)
     if dry_run:
@@ -114,7 +114,7 @@ def run_backfill_task(source: str, start: str, end: str, reason: str, dry_run: b
         return
     settings = Settings()
     require_secrets(settings)
-    print(run_pipeline(settings))
+    print(run_backfill(settings, source, start, end, reason))
 
 
 @task(

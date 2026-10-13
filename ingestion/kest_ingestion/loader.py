@@ -251,12 +251,13 @@ def load_batch(settings: Settings, batch_id: str) -> bool:
             lock_cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", (f"load:{source}",))
 
 
-def load_pending(settings: Settings) -> list[str]:
-    with control_connection(settings) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT batch_id::text FROM batch_manifest WHERE status IN ('STORED','FAILED') ORDER BY created_at"
-        )
-        batch_ids = [row[0] for row in cur.fetchall()]
+def load_pending(settings: Settings, batch_ids: list[str] | None = None) -> list[str]:
+    if batch_ids is None:
+        with control_connection(settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT batch_id::text FROM batch_manifest WHERE status IN ('STORED','FAILED') ORDER BY created_at"
+            )
+            batch_ids = [row[0] for row in cur.fetchall()]
     for batch_id in batch_ids:
         load_batch(settings, batch_id)
     return batch_ids

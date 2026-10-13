@@ -12,6 +12,7 @@ from kest_ingestion.workflows import (
     health,
     publish_gold,
     reconcile_sources,
+    run_backfill,
     run_dbt_build,
     run_pipeline,
     smoke,
@@ -61,7 +62,10 @@ def main() -> None:
         if args.backfill_source and args.dry_run:
             emit({"dry_run": True, **plan})
         else:
-            emit(run_pipeline(settings))
+            if args.backfill_source:
+                emit(run_backfill(settings, args.backfill_source, args.start, args.end, args.reason))
+            else:
+                emit(run_pipeline(settings))
     elif args.command == "health":
         emit(health(settings))
     elif args.command == "smoke":

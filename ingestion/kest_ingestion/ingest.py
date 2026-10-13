@@ -7,7 +7,7 @@ import shutil
 import time
 import uuid
 from collections.abc import Iterable, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, cast
@@ -69,22 +69,38 @@ def _checkpoint(settings: Settings, source: str) -> dict[str, Any]:
     return row[0] if row else {}
 
 
-def _postgres_records(settings: Settings) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
-    checkpoint = _checkpoint(settings, "postgres")
+def _postgres_records(
+    settings: Settings,
+    *,
+    window: tuple[datetime, datetime] | None = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    checkpoint = _checkpoint(settings, "postgres") if window is None else {}
     previous = checkpoint.get("updated_at")
-    lower_bound = (
+    lower_bound = window[0] if window else (
         datetime.fromisoformat(previous) - timedelta(hours=2)
         if previous
         else datetime(1970, 1, 1, tzinfo=UTC)
     )
+    upper_bound = window[1] if window else None
     result: dict[str, list[dict[str, Any]]] = {}
     max_updated = lower_bound
     with business_connection(settings) as conn, conn.cursor() as cur:
         for table, (pk, cursor_column) in POSTGRES_TABLES.items():
-            cur.execute(
-                f'SELECT * FROM "{table}" WHERE "{cursor_column}" >= %s ORDER BY "{cursor_column}", "{pk}"',
-                (lower_bound - (timedelta(hours=46) if table == "events" else timedelta()),),
+            query_lower_bound = lower_bound - (
+                timedelta(hours=46) if window is None and table == "events" else timedelta()
             )
+            if upper_bound:
+                cur.execute(
+                    f'SELECT * FROM "{table}" WHERE "{cursor_column}" >= %s '
+                    f'AND "{cursor_column}" < %s ORDER BY "{cursor_column}", "{pk}"',
+                    (query_lower_bound, upper_bound),
+                )
+            else:
+                cur.execute(
+                    f'SELECT * FROM "{table}" WHERE "{cursor_column}" >= %s '
+                    f'ORDER BY "{cursor_column}", "{pk}"',
+                    (query_lower_bound,),
+                )
             names = [column.name for column in cur.description]
             rows = [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
             result[table] = rows
@@ -102,9 +118,12 @@ def _load_source_config(path: Path, settings: Settings) -> SourceConfig:
 
 
 def _rest_records(
-    config: SourceConfig, checkpoint: dict[str, Any]
+    config: SourceConfig,
+    checkpoint: dict[str, Any],
+    *,
+    window: tuple[datetime, datetime] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    updated_since = checkpoint.get("updated_at")
+    updated_since = window[0].isoformat() if window else checkpoint.get("updated_at")
     cursor: str | None = None
     records: list[dict[str, Any]] = []
     newest = updated_since
@@ -131,6 +150,15 @@ def _rest_records(
                     time.sleep(min(2**attempt, 8))
             body = response.json()
             page = body[config.data_path]
+            if window:
+                page = [
+                    record
+                    for record in page
+                    if record.get(config.updated_at)
+                    and window[0]
+                    <= datetime.fromisoformat(str(record[config.updated_at]).replace("Z", "+00:00"))
+                    < window[1]
+                ]
             records.extend(page)
             for record in page:
                 value = record.get(config.updated_at)
@@ -277,6 +305,8 @@ def ingest_tables(
     source: str,
     tables: dict[str, list[dict[str, Any]]],
     watermark: dict[str, Any],
+    *,
+    update_checkpoint: bool = True,
 ) -> BatchResult | None:
     if not any(tables.values()):
         return None
@@ -307,10 +337,11 @@ def ingest_tables(
                 for item in objects
             ],
         )
-        cur.execute(
-            "INSERT INTO source_checkpoint(source, watermark, batch_id) VALUES (%s,%s,%s) ON CONFLICT(source) DO UPDATE SET watermark=excluded.watermark, batch_id=excluded.batch_id, updated_at=now()",
-            (source, json.dumps(watermark), batch_id),
-        )
+        if update_checkpoint:
+            cur.execute(
+                "INSERT INTO source_checkpoint(source, watermark, batch_id) VALUES (%s,%s,%s) ON CONFLICT(source) DO UPDATE SET watermark=excluded.watermark, batch_id=excluded.batch_id, updated_at=now()",
+                (source, json.dumps(watermark), batch_id),
+            )
     return BatchResult(
         batch_id=batch_id,
         source=source,
@@ -353,6 +384,62 @@ def ingest_all(settings: Settings) -> list[BatchResult]:
         ingest_csv(settings),
     ]
     return [result for result in results if result is not None]
+
+
+def ingest_backfill(
+    settings: Settings,
+    source: str,
+    start: date,
+    end: date,
+) -> list[BatchResult]:
+    """Extract one bounded source window without advancing its incremental checkpoint."""
+    window = (
+        datetime.combine(start, time.min, tzinfo=UTC),
+        datetime.combine(end + timedelta(days=1), time.min, tzinfo=UTC),
+    )
+    watermark = {
+        "backfill": True,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
+    result: BatchResult | None
+    if source == "postgres":
+        tables, _ = _postgres_records(settings, window=window)
+        result = ingest_tables(
+            settings,
+            source,
+            tables,
+            watermark,
+            update_checkpoint=False,
+        )
+    elif source == "product_catalog":
+        fixture = ROOT / "ingestion" / "fixtures" / "product_catalog.csv"
+        rows, csv_watermark = _csv_records(fixture)
+        rows = [row for row in rows if window[0] <= row["updated_at"] < window[1]]
+        result = ingest_tables(
+            settings,
+            source,
+            {"product_catalog": rows},
+            {**watermark, **csv_watermark},
+            update_checkpoint=False,
+        )
+    else:
+        loaded_configs = [
+            _load_source_config(path, settings) for path in settings.source_config_dir.glob("*.yml")
+        ]
+        configs = {config.name: config for config in loaded_configs}
+        if source not in configs:
+            raise ValueError(f"Unknown REST source: {source}")
+        config = configs[source]
+        rows, _ = _rest_records(config, {}, window=window)
+        result = ingest_tables(
+            settings,
+            source,
+            {config.table_name: rows},
+            watermark,
+            update_checkpoint=False,
+        )
+    return [result] if result else []
 
 
 def reconcile_hard_deletes(settings: Settings) -> BatchResult | None:
