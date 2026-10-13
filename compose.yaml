@@ -5,7 +5,7 @@ x-airflow-common: &airflow-common
     context: .
     dockerfile: infra/images/airflow/Dockerfile
   image: ${AIRFLOW_IMAGE:-kest-airflow:3.3.2}
-  env_file: [.env]
+  env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -57,7 +57,7 @@ x-airflow-common: &airflow-common
 services:
   postgres:
     image: postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
@@ -101,7 +101,7 @@ services:
       - --hostname-backchannel-dynamic=true
       - --proxy-headers=xforwarded
       - --import-realm
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
@@ -183,7 +183,7 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:26.9.14.10@sha256:4dcecd874534d2ab0b13695610b7085b64451c8d01ecb0771d4a2a227c094617
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment:
       CLICKHOUSE_DB: default
       CLICKHOUSE_USER: default
@@ -231,7 +231,7 @@ services:
       dockerfile: infra/images/tooling.Dockerfile
     image: ${TOOLING_IMAGE:-kest-tooling:0.1.0}
     profiles: [demo]
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     command: ["uvicorn", "source_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes: ["./:/opt/kest:ro"]
     ports: ["127.0.0.1:8090:8000"]
@@ -252,7 +252,7 @@ services:
       context: .
       dockerfile: infra/images/tooling.Dockerfile
     image: ${TOOLING_IMAGE:-kest-tooling:0.1.0}
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment:
       PYTHONPATH: /opt/kest/ingestion
       DBT_TARGET_PATH: /opt/kest/.runtime/dbt/target
@@ -317,7 +317,7 @@ services:
       context: .
       dockerfile: infra/images/superset/Dockerfile
     image: ${SUPERSET_IMAGE:-kest-superset:6.1.0}
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment: &superset-env
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SUPERSET_DATABASE_URI: postgresql+psycopg2://superset:${SUPERSET_DB_PASSWORD}@postgres:5432/superset
@@ -336,7 +336,7 @@ services:
 
   superset:
     image: ${SUPERSET_IMAGE:-kest-superset:6.1.0}
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment: *superset-env
     command: ["/app/docker/entrypoints/run-server.sh"]
     ports: ["127.0.0.1:8088:8088"]
@@ -356,7 +356,7 @@ services:
 
   superset-worker:
     image: ${SUPERSET_IMAGE:-kest-superset:6.1.0}
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment: *superset-env
     command: ["celery", "--app=superset.tasks.celery_app:app", "worker", "--pool=prefork", "--concurrency=2"]
     healthcheck:
@@ -395,7 +395,7 @@ services:
   openmetadata-migrate:
     image: docker.getcollate.io/openmetadata/server:2.0.5@sha256:ede23602d8e7cc2447e14f67b36d8ee2e468671fb3157a39e776ecfd6d7cc11b
     profiles: [catalog]
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment: &om-env
       DB_DRIVER_CLASS: org.postgresql.Driver
       DB_SCHEME: postgresql
@@ -441,7 +441,7 @@ services:
   openmetadata-server:
     image: docker.getcollate.io/openmetadata/server:2.0.5@sha256:ede23602d8e7cc2447e14f67b36d8ee2e468671fb3157a39e776ecfd6d7cc11b
     profiles: [catalog]
-    env_file: [.env]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
     environment: *om-env
     depends_on:
       openmetadata-migrate:
@@ -455,6 +455,123 @@ services:
     networks: [control, data]
     restart: unless-stopped
     mem_limit: 1536m
+
+  platform-exporter:
+    image: ${TOOLING_IMAGE:-kest-tooling:0.1.0}
+    profiles: [observability]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
+    environment:
+      PYTHONPATH: /opt/kest/ingestion
+      OPENMETADATA_REQUIRED: ${OPENMETADATA_REQUIRED:-false}
+    command: ["python", "/opt/kest/ops/metrics_exporter.py"]
+    volumes: ["./:/opt/kest:ro"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9108/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [control, data]
+    restart: unless-stopped
+    mem_limit: 256m
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+    profiles: [observability]
+    environment:
+      DATA_SOURCE_NAME: postgresql://platform_control:${PLATFORM_CONTROL_PASSWORD}@postgres:5432/platform_control?sslmode=disable
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 128m
+
+  redis-exporter:
+    image: ghcr.io/oliver006/redis_exporter:v1.93.0-alpine@sha256:93831cd4d5d67687de67c9d5221b14312fea580af8d157583ed9d4459bf2dd70
+    profiles: [observability]
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis: {condition: service_healthy}
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 128m
+
+  node-exporter:
+    image: ghcr.io/prometheus/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+    profiles: [observability]
+    command: ["--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 128m
+
+  prometheus:
+    image: ghcr.io/prometheus/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/alerts.yml:/etc/prometheus/rules/kest.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    depends_on: [platform-exporter, postgres-exporter, redis-exporter, node-exporter]
+    networks: [control, data]
+    restart: unless-stopped
+    mem_limit: 768m
+
+  alertmanager:
+    image: ghcr.io/prometheus/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d
+    profiles: [observability]
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    ports: ["127.0.0.1:9093:9093"]
+    depends_on: [platform-exporter]
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 256m
+
+  grafana:
+    image: grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
+    profiles: [observability]
+    env_file: ["${KEST_SERVICE_ENV_FILE:-.env}"]
+    environment:
+      GF_SECURITY_ADMIN_USER: platform-admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+      GF_AUTH_GENERIC_OAUTH_NAME: Kest SSO
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: grafana
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${GRAFANA_OIDC_CLIENT_SECRET}
+      GF_AUTH_GENERIC_OAUTH_SCOPES: openid profile email roles
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: http://127.0.0.1:8180/realms/kest/protocol/openid-connect/auth
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: http://keycloak:8080/realms/kest/protocol/openid-connect/token
+      GF_AUTH_GENERIC_OAUTH_API_URL: http://keycloak:8080/realms/kest/protocol/openid-connect/userinfo
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(roles[*], 'platform-admin') && 'Admin' || contains(roles[*], 'data-engineer') && 'Editor' || 'Viewer'"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus, keycloak]
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 512m
 
 networks:
   control:
@@ -470,3 +587,6 @@ volumes:
   silo-data:
   airflow-logs:
   opensearch-data:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:

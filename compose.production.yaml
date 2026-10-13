@@ -66,5 +66,10 @@ services:
   superset-worker:
     pull_policy: always
 
+  platform-exporter:
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+    pull_policy: always
+
 volumes:
   runtime-data:

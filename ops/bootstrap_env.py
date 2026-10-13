@@ -137,6 +137,8 @@ def main() -> None:
         "SUPERSET_OIDC_CLIENT_SECRET": token(48),
         "OPENMETADATA_OIDC_CLIENT_SECRET": token(48),
         "OPENMETADATA_INGESTION_CLIENT_SECRET": token(48),
+        "GRAFANA_OIDC_CLIENT_SECRET": token(48),
+        "GRAFANA_ADMIN_PASSWORD": token(),
         "KEST_AUTH_MODE": "oidc",
         "KEST_ENVIRONMENT": "local",
         "KEST_GIT_SHA": "workspace",

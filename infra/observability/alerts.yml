@@ -1,0 +1,63 @@
+groups:
+  - name: kest-platform
+    rules:
+      - alert: KestServiceDown
+        expr: kest_service_up == 0
+        for: 2m
+        labels: {severity: critical, owner: platform}
+        annotations:
+          summary: "Kest service {{ $labels.service }} is unavailable"
+          runbook: "operations#service-down"
+      - alert: KestExporterCollectionFailed
+        expr: kest_platform_exporter_up == 0
+        for: 2m
+        labels: {severity: critical, owner: platform}
+        annotations: {summary: "Kest control-plane metrics cannot be collected"}
+      - alert: KestBatchFailedOrStuck
+        expr: kest_batch_problem_age_seconds > 1800
+        for: 5m
+        labels: {severity: critical, owner: data-engineering}
+        annotations:
+          summary: "{{ $labels.source }} has a batch in {{ $labels.status }} for more than 30 minutes"
+          airflow: "http://127.0.0.1:8080"
+      - alert: KestPipelineRunFailedOrStuck
+        expr: kest_pipeline_run_problem_age_seconds > 1800
+        for: 5m
+        labels: {severity: critical, owner: data-engineering}
+        annotations:
+          summary: "{{ $labels.run_type }} for {{ $labels.source }} is {{ $labels.status }} for more than 30 minutes"
+          airflow: "http://127.0.0.1:8080"
+      - alert: KestReleaseNotCommitted
+        expr: kest_release_problem_age_seconds > 900
+        for: 5m
+        labels: {severity: critical, owner: platform}
+        annotations: {summary: "A release is {{ $labels.status }} for more than 15 minutes"}
+      - alert: KestSourceStale
+        expr: kest_source_checkpoint_age_seconds > 93600
+        for: 15m
+        labels: {severity: warning, owner: data-engineering}
+        annotations:
+          summary: "Source {{ $labels.source }} has not checkpointed within its 26h SLO"
+          catalog: "http://127.0.0.1:8585"
+      - alert: KestDatasetStale
+        expr: kest_dataset_publication_age_seconds > 93600
+        for: 15m
+        labels: {severity: warning, owner: analytics-engineering}
+        annotations:
+          summary: "Dataset {{ $labels.dataset }} has not published within its 26h SLO"
+          catalog: "http://127.0.0.1:8585"
+      - alert: KestBackupVerificationOverdue
+        expr: kest_backup_verified_age_seconds > 90000
+        for: 30m
+        labels: {severity: critical, owner: platform}
+        annotations: {summary: "No verified restore result in the last 25 hours"}
+      - alert: KestHostDiskLow
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"} < 0.15
+        for: 15m
+        labels: {severity: warning, owner: platform}
+        annotations: {summary: "Host filesystem {{ $labels.mountpoint }} has less than 15% free"}
+      - alert: KestScrapeTargetDown
+        expr: up == 0
+        for: 5m
+        labels: {severity: warning, owner: platform}
+        annotations: {summary: "Prometheus target {{ $labels.job }} is down"}

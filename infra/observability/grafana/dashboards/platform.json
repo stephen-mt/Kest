@@ -1,0 +1,17 @@
+{
+  "title": "Kest Platform Control Plane",
+  "uid": "kest-control-plane",
+  "schemaVersion": 41,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "stat", "title": "Services up", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "sum(kest_service_up)", "legendFormat": "services"}]},
+    {"id": 2, "type": "stat", "title": "Problem batches", "gridPos": {"x": 6, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "sum(kest_batch_problem_total) or vector(0)", "legendFormat": "batches"}]},
+    {"id": 3, "type": "stat", "title": "Problem runs", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "sum(kest_pipeline_run_problem_total) or vector(0)", "legendFormat": "runs"}]},
+    {"id": 4, "type": "stat", "title": "Problem releases", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 5}, "targets": [{"expr": "sum(kest_release_problem_total) or vector(0)", "legendFormat": "releases"}]},
+    {"id": 5, "type": "timeseries", "title": "Source checkpoint age", "gridPos": {"x": 0, "y": 5, "w": 12, "h": 8}, "targets": [{"expr": "kest_source_checkpoint_age_seconds", "legendFormat": "{{source}}"}]},
+    {"id": 6, "type": "timeseries", "title": "Dataset publication age", "gridPos": {"x": 12, "y": 5, "w": 12, "h": 8}, "targets": [{"expr": "kest_dataset_publication_age_seconds", "legendFormat": "{{dataset}}"}]},
+    {"id": 7, "type": "timeseries", "title": "Gold rows", "gridPos": {"x": 0, "y": 13, "w": 12, "h": 8}, "targets": [{"expr": "kest_gold_rows", "legendFormat": "{{dataset}}"}]},
+    {"id": 8, "type": "timeseries", "title": "Host free disk ratio", "gridPos": {"x": 12, "y": 13, "w": 12, "h": 8}, "targets": [{"expr": "node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\"}", "legendFormat": "{{mountpoint}}"}]}
+  ]
+}

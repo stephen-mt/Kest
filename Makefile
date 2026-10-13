@@ -5,7 +5,7 @@ COMPOSE := docker compose --env-file .env -f compose.yaml
 
 .PHONY: help bootstrap-env up demo-up seed pipeline demo de da source-new test test-unit test-integration smoke health type \
 	catalog catalog-up catalog-sync catalog-down failure-test backup restore-test down dev-init dbt-build \
-	credentials dependency-check lint config migrate rollback deploy
+	credentials dependency-check lint config migrate rollback deploy observability-up observability-down
 
 help:
 	@awk 'BEGIN {FS = ":.*## "; printf "Kest commands:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -23,6 +23,7 @@ up: bootstrap-env ## Build and start the core platform
 	@$(COMPOSE) run --rm --no-deps object-store-init
 	@$(COMPOSE) run --rm --no-deps tooling python -m ops.migrate
 	@$(COMPOSE) up -d --wait keycloak
+	@$(COMPOSE) run --rm --no-deps tooling python ops/keycloak_sync.py
 	@$(COMPOSE) run --rm --no-deps airflow-init
 	@$(COMPOSE) run --rm --no-deps superset-init
 	@$(COMPOSE) up -d --no-build --wait airflow-api-server airflow-scheduler airflow-dag-processor airflow-worker airflow-triggerer superset superset-worker
@@ -88,6 +89,12 @@ catalog-down: bootstrap-env ## Stop optional OpenMetadata catalog services
 	@$(COMPOSE) exec -T airflow-api-server airflow dags pause metadata_sync >/dev/null || true
 	@$(COMPOSE) --profile catalog stop openmetadata-server opensearch
 
+observability-up: up ## Start Prometheus, Alertmanager and the SSO-enabled Grafana UI
+	@$(COMPOSE) --profile observability up -d --wait platform-exporter postgres-exporter redis-exporter node-exporter prometheus alertmanager grafana
+
+observability-down: bootstrap-env ## Stop the optional observability UI and collectors
+	@$(COMPOSE) --profile observability stop grafana alertmanager prometheus node-exporter redis-exporter postgres-exporter platform-exporter
+
 failure-test: demo-up ## Run replay, retry, contract, publish and workload failures
 	@if [ -f tests/integration/test_failure_scenarios.py ] && [ -f tests/security/test_rbac.py ]; then \
 		$(COMPOSE) run --rm tooling pytest -q tests/integration/test_failure_scenarios.py tests/security/test_rbac.py; \
@@ -106,7 +113,7 @@ rollback: bootstrap-env ## Plan or execute one audited mart rollback; set DATASE
 	@$(COMPOSE) run --rm tooling python -m kest_ingestion.cli rollback --dataset "$(DATASET)" --publication-id "$(PUBLICATION_ID)" --reason "$(REASON)" $(if $(filter 1,$(EXECUTE)),--execute)
 
 down: bootstrap-env ## Stop services while retaining persistent data
-	@$(COMPOSE) --profile catalog --profile demo --profile recovery down
+	@$(COMPOSE) --profile catalog --profile demo --profile recovery --profile observability down
 
 deploy: ## Deploy immutable images; use ENV=staging or ENV=production
 	@test "$(ENV)" = "staging" -o "$(ENV)" = "production" || (echo "ENV must be staging or production" >&2; exit 2)
