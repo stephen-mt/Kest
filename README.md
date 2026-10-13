@@ -1,9 +1,9 @@
 # Kest
 
-Kest is a compact, production-disciplined OSS data platform for a small data
-team. It gives data engineers one governed path from source to Gold, gives data
-analysts searchable datasets and a BI workspace, and gives platform operators a
-single identity, release and observability plane.
+Kest is a compact OSS data platform for a small data team. Data engineers get
+one governed path from source to Gold, data analysts get searchable datasets
+and a BI workspace, and platform engineers get one identity, release and
+observability plane.
 
 It is designed for a dedicated Docker Compose host. It is not a claim of
 multi-host HA or unlimited scale.
@@ -36,8 +36,10 @@ UIs.
 4. dbt builds staging, core and mart models. Developer builds are isolated in
    `dev_<developer>`; production builds target Gold candidates.
 5. Publishing validates a candidate and atomically exchanges one mart at a
-   time into Gold. Publication state, release identity and rollback history are
-   durable control-plane records.
+   time into Gold. Its prepared checksum is immutable: after a worker crash,
+   retry reconciles the recorded checksum against Gold before deciding whether
+   an exchange is still required. Publication state, release identity and
+   rollback history are durable control-plane records.
 
 ### Control plane
 
@@ -46,6 +48,9 @@ UIs.
 - PostgreSQL Control owns versioned migrations, manifests, checkpoints,
   advisory locks, pipeline/run correlation, publication state and release
   audit.
+- GitHub CI is the delivery gate. Immutable images are built only after the CI
+  workflow for the exact `main` commit succeeds; the workflow checks out and
+  labels that commit SHA rather than whichever revision happens to be current.
 - Keycloak supplies SSO and the `platform-admin`, `data-engineer` and
   `data-analyst` roles.
 - Prometheus collects service and platform-state metrics. Alertmanager groups
@@ -163,13 +168,14 @@ make da
 | Staging | Gold candidate and staging Gold | Images tagged with the exact Git SHA | Migration, integration and release verification |
 | Production | Gold | Promote the same immutable SHA-tagged images | Scheduled ingestion, governed publish and BI |
 
-Pushing `main` builds Airflow, tooling and Superset images with an OCI revision
-label, SBOM and provenance. The protected deployment workflow materializes a
-`0600` environment file on a self-hosted runner and promotes a selected full
-Git SHA. Deployment rejects mutable image tags, mismatched environment files,
-missing secrets and executable checkout mounts, then applies migrations before
-starting services. OpenMetadata and observability are enabled in staging and
-production deployments.
+A successful `Kest CI` run on `main` builds Airflow, tooling and Superset images
+for that exact commit, with an OCI revision label, SBOM and provenance. A failed
+or cancelled CI run cannot trigger image publication. The protected deployment
+workflow materializes a `0600` environment file on a self-hosted runner and
+promotes a selected full Git SHA. Deployment rejects mutable image tags,
+mismatched environment files, missing secrets and executable checkout mounts,
+then applies migrations before starting services. OpenMetadata and
+observability are enabled in staging and production deployments.
 
 The expected CI/CD controls outside this repository are:
 

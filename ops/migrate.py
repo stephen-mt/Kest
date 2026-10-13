@@ -49,13 +49,17 @@ def ensure_postgres_databases() -> None:
                 cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (name,))
                 if cur.fetchone():
                     cur.execute(
-                        sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD %s").format(sql.Identifier(name)),
-                        (os.environ[password_key],),
+                        sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+                            sql.Identifier(name),
+                            sql.Literal(os.environ[password_key]),
+                        )
                     )
                 else:
                     cur.execute(
-                        sql.SQL("CREATE ROLE {} LOGIN PASSWORD %s").format(sql.Identifier(name)),
-                        (os.environ[password_key],),
+                        sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                            sql.Identifier(name),
+                            sql.Literal(os.environ[password_key]),
+                        )
                     )
                 cur.execute("SELECT 1 FROM pg_database WHERE datname=%s", (name,))
                 if not cur.fetchone():

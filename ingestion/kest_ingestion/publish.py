@@ -62,66 +62,113 @@ def publish_mart(settings: Settings, table: str, run_id: str) -> str:
     if table not in MARTS:
         raise ValueError(f"Unknown mart: {table}")
     client = clickhouse_client(settings, "publisher")
-    candidate_exists = client.query(
-        "SELECT count() FROM system.tables WHERE database='gold_candidate' AND name=%(table)s",
-        parameters={"table": table},
-    ).first_row[0]
-    if not candidate_exists:
-        raise RuntimeError(f"Candidate does not exist: gold_candidate.{table}")
-    candidate_checksum = table_checksum(client, "gold_candidate", table)
-    if candidate_checksum.startswith("0:"):
-        raise RuntimeError(f"Refusing to publish empty candidate: {table}")
-
-    release_id = ensure_release(settings, run_id)
     publication_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"kest:publication:{run_id}:{table}"))
-    with control_connection(settings) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO publication_manifest(
-              publication_id,run_id,release_id,dataset,candidate_checksum,status,requested_by
-            ) VALUES (%s,%s,%s,%s,%s,'PREPARED',%s)
-            ON CONFLICT (publication_id) DO UPDATE
-              SET candidate_checksum=excluded.candidate_checksum,
-                  status=CASE WHEN publication_manifest.status='COMMITTED' THEN 'COMMITTED' ELSE 'PREPARED' END,
-                  error=NULL
-            """,
-            (
-                publication_id,
-                run_id,
-                release_id,
-                table,
-                candidate_checksum,
-                os.getenv("KEST_REQUESTED_BY", "system"),
-            ),
-        )
-    _event(settings, publication_id, "PREPARED", {"candidate_checksum": candidate_checksum})
-
     with control_connection(settings, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", (f"publish:{table}",))
         if not cur.fetchone()[0]:
             raise RuntimeError(f"Another publisher owns the lock for {table}")
+        mutable_manifest = False
         try:
+            release_id = ensure_release(settings, run_id)
+            candidate_exists = client.query(
+                "SELECT count() FROM system.tables "
+                "WHERE database='gold_candidate' AND name=%(table)s",
+                parameters={"table": table},
+            ).first_row[0]
+            candidate_checksum = (
+                table_checksum(client, "gold_candidate", table) if candidate_exists else None
+            )
             production_exists = client.query(
                 "SELECT count() FROM system.tables WHERE database='gold' AND name=%(table)s",
                 parameters={"table": table},
             ).first_row[0]
-            previous_checksum = None
-            if production_exists and table_checksum(client, "gold", table) == candidate_checksum:
-                with control_connection(settings) as manifest_conn, manifest_conn.cursor() as manifest_cur:
+            production_checksum = (
+                table_checksum(client, "gold", table) if production_exists else None
+            )
+
+            with control_connection(settings) as manifest_conn, manifest_conn.cursor() as manifest_cur:
+                manifest_cur.execute(
+                    """
+                    SELECT candidate_checksum,status,previous_checksum,production_checksum,snapshot_table
+                    FROM publication_manifest WHERE publication_id=%s FOR UPDATE
+                    """,
+                    (publication_id,),
+                )
+                manifest = manifest_cur.fetchone()
+                if manifest:
+                    expected_checksum, status, previous_checksum, recorded_production, snapshot = manifest
+                    if status == "COMMITTED":
+                        if production_checksum != recorded_production:
+                            raise RuntimeError(
+                                f"Committed publication drift for {table}: "
+                                f"gold={production_checksum} recorded={recorded_production}"
+                            )
+                        return publication_id
+                    mutable_manifest = True
+                    if production_checksum == expected_checksum:
+                        manifest_cur.execute(
+                            """
+                            UPDATE publication_manifest
+                            SET status='COMMITTED', production_checksum=%s,
+                                committed_at=coalesce(committed_at, now()), error=NULL
+                            WHERE publication_id=%s
+                            """,
+                            (expected_checksum, publication_id),
+                        )
+                    elif candidate_checksum != expected_checksum:
+                        raise RuntimeError(
+                            f"Prepared candidate changed for {table}: "
+                            f"current={candidate_checksum} expected={expected_checksum}"
+                        )
+                    else:
+                        manifest_cur.execute(
+                            "UPDATE publication_manifest SET status='PREPARED', error=NULL "
+                            "WHERE publication_id=%s",
+                            (publication_id,),
+                        )
+                else:
+                    if candidate_checksum is None:
+                        raise RuntimeError(f"Candidate does not exist: gold_candidate.{table}")
+                    if candidate_checksum.startswith("0:"):
+                        raise RuntimeError(f"Refusing to publish empty candidate: {table}")
+                    expected_checksum = candidate_checksum
+                    previous_checksum = None
+                    snapshot = None
                     manifest_cur.execute(
                         """
-                        UPDATE publication_manifest
-                        SET status='COMMITTED', production_checksum=%s, committed_at=now(), error=NULL
-                        WHERE publication_id=%s
+                        INSERT INTO publication_manifest(
+                          publication_id,run_id,release_id,dataset,candidate_checksum,status,requested_by
+                        ) VALUES (%s,%s,%s,%s,%s,'PREPARED',%s)
                         """,
-                        (candidate_checksum, publication_id),
+                        (
+                            publication_id,
+                            run_id,
+                            release_id,
+                            table,
+                            expected_checksum,
+                            os.getenv("KEST_REQUESTED_BY", "system"),
+                        ),
                     )
-                _event(settings, publication_id, "RECONCILED", {"reason": "Gold already matches candidate"})
+                    mutable_manifest = True
+
+            if production_checksum == expected_checksum:
+                _event(
+                    settings,
+                    publication_id,
+                    "RECONCILED",
+                    {"reason": "Gold already matches the prepared checksum"},
+                )
                 return publication_id
-            snapshot = None
+
+            _event(settings, publication_id, "PREPARED", {"candidate_checksum": expected_checksum})
             if production_exists:
-                previous_checksum = table_checksum(client, "gold", table)
-                snapshot = f"{table}__{publication_id.replace('-', '')[:12]}"
+                if previous_checksum and previous_checksum != production_checksum:
+                    raise RuntimeError(
+                        f"Gold changed while publication was prepared for {table}: "
+                        f"current={production_checksum} expected_previous={previous_checksum}"
+                    )
+                previous_checksum = production_checksum
+                snapshot = snapshot or f"{table}__{publication_id.replace('-', '')[:12]}"
                 snapshot_exists = client.query(
                     "SELECT count() FROM system.tables WHERE database='gold_history' AND name=%(name)s",
                     parameters={"name": snapshot},
@@ -129,6 +176,12 @@ def publish_mart(settings: Settings, table: str, run_id: str) -> str:
                 if not snapshot_exists:
                     client.command(f"CREATE TABLE gold_history.`{snapshot}` AS gold.{table}")
                     client.command(f"INSERT INTO gold_history.`{snapshot}` SELECT * FROM gold.{table}")
+                snapshot_checksum = table_checksum(client, "gold_history", snapshot)
+                if snapshot_checksum != previous_checksum:
+                    raise RuntimeError(
+                        f"Rollback snapshot mismatch for {table}: "
+                        f"snapshot={snapshot_checksum} gold={previous_checksum}"
+                    )
                 with control_connection(settings) as manifest_conn, manifest_conn.cursor() as manifest_cur:
                     manifest_cur.execute(
                         "UPDATE publication_manifest SET previous_checksum=%s, snapshot_table=%s "
@@ -139,9 +192,10 @@ def publish_mart(settings: Settings, table: str, run_id: str) -> str:
                 client.command(f"CREATE TABLE gold.{table} AS gold_candidate.{table}")
             client.command(f"EXCHANGE TABLES gold_candidate.{table} AND gold.{table}")
             production_checksum = table_checksum(client, "gold", table)
-            if production_checksum != candidate_checksum:
+            if production_checksum != expected_checksum:
                 raise RuntimeError(
-                    f"Post-publish checksum mismatch for {table}: {production_checksum}/{candidate_checksum}"
+                    f"Post-publish checksum mismatch for {table}: "
+                    f"{production_checksum}/{expected_checksum}"
                 )
             with control_connection(settings) as manifest_conn, manifest_conn.cursor() as manifest_cur:
                 manifest_cur.execute(
@@ -157,12 +211,14 @@ def publish_mart(settings: Settings, table: str, run_id: str) -> str:
             _retain_three_snapshots(client, table)
             return publication_id
         except Exception as error:
-            with control_connection(settings) as manifest_conn, manifest_conn.cursor() as manifest_cur:
-                manifest_cur.execute(
-                    "UPDATE publication_manifest SET status='FAILED', error=%s WHERE publication_id=%s",
-                    (str(error)[:4000], publication_id),
-                )
-            _event(settings, publication_id, "FAILED", {"error": str(error)[:4000]})
+            if mutable_manifest:
+                with control_connection(settings) as manifest_conn, manifest_conn.cursor() as manifest_cur:
+                    manifest_cur.execute(
+                        "UPDATE publication_manifest SET status='FAILED', error=%s "
+                        "WHERE publication_id=%s AND status<>'COMMITTED'",
+                        (str(error)[:4000], publication_id),
+                    )
+                _event(settings, publication_id, "FAILED", {"error": str(error)[:4000]})
             raise
         finally:
             cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", (f"publish:{table}",))

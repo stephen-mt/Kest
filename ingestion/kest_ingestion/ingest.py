@@ -4,7 +4,7 @@ import csv
 import hashlib
 import json
 import shutil
-import time
+import time as time_module
 import uuid
 from collections.abc import Iterable, Iterator
 from datetime import UTC, date, datetime, time, timedelta
@@ -140,14 +140,14 @@ def _rest_records(
                     if response.status_code == 429:
                         if attempt == config.max_retries:
                             response.raise_for_status()
-                        time.sleep(float(response.headers.get("Retry-After", "1")))
+                        time_module.sleep(float(response.headers.get("Retry-After", "1")))
                         continue
                     response.raise_for_status()
                     break
                 except (httpx.TimeoutException, httpx.TransportError):
                     if attempt == config.max_retries:
                         raise
-                    time.sleep(min(2**attempt, 8))
+                    time_module.sleep(min(2**attempt, 8))
             body = response.json()
             page = body[config.data_path]
             if window:
