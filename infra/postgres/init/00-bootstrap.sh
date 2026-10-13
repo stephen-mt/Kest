@@ -17,6 +17,7 @@ create_role_and_db platform_control "$PLATFORM_CONTROL_PASSWORD" platform_contro
 create_role_and_db airflow "$AIRFLOW_DB_PASSWORD" airflow
 create_role_and_db superset "$SUPERSET_DB_PASSWORD" superset
 create_role_and_db openmetadata "$OPENMETADATA_DB_PASSWORD" openmetadata
+create_role_and_db keycloak "$KEYCLOAK_DB_PASSWORD" keycloak
 
 psql --username "$POSTGRES_USER" --dbname platform_control \
   --set=control_password="$PLATFORM_CONTROL_PASSWORD" <<'SQL'

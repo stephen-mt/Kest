@@ -1,0 +1,131 @@
+{
+  "realm": "kest",
+  "displayName": "Kest Data Platform",
+  "enabled": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "roles": {
+    "realm": [
+      {"name": "platform-admin"},
+      {"name": "data-engineer"},
+      {"name": "data-analyst"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "airflow",
+      "name": "Apache Airflow",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${AIRFLOW_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:8080/*"],
+      "webOrigins": ["http://127.0.0.1:8080"],
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "roles",
+            "jsonType.label": "String"
+          }
+        }
+      ],
+      "defaultClientScopes": ["web-origins", "acr", "roles", "profile", "email"]
+    },
+    {
+      "clientId": "superset",
+      "name": "Apache Superset",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${SUPERSET_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:8088/*"],
+      "webOrigins": ["http://127.0.0.1:8088"],
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "multivalued": "true",
+            "userinfo.token.claim": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "roles",
+            "jsonType.label": "String"
+          }
+        }
+      ],
+      "defaultClientScopes": ["web-origins", "acr", "roles", "profile", "email"]
+    },
+    {
+      "clientId": "openmetadata",
+      "name": "OpenMetadata",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${OPENMETADATA_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:8585/callback", "http://127.0.0.1:8585/*"],
+      "webOrigins": ["http://127.0.0.1:8585"],
+      "defaultClientScopes": ["web-origins", "acr", "roles", "profile", "email"]
+    },
+    {
+      "clientId": "openmetadata-ingestion",
+      "name": "OpenMetadata ingestion service",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${OPENMETADATA_INGESTION_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
+    }
+  ],
+  "users": [
+    {
+      "username": "platform-admin",
+      "email": "platform-admin@kest.local",
+      "firstName": "Platform",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "${KEYCLOAK_PLATFORM_ADMIN_PASSWORD}", "temporary": false}],
+      "realmRoles": ["platform-admin"]
+    },
+    {
+      "username": "data-engineer",
+      "email": "data-engineer@kest.local",
+      "firstName": "Data",
+      "lastName": "Engineer",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "${KEYCLOAK_DE_PASSWORD}", "temporary": false}],
+      "realmRoles": ["data-engineer"]
+    },
+    {
+      "username": "data-analyst",
+      "email": "data-analyst@kest.local",
+      "firstName": "Data",
+      "lastName": "Analyst",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [{"type": "password", "value": "${KEYCLOAK_DA_PASSWORD}", "temporary": false}],
+      "realmRoles": ["data-analyst"]
+    }
+  ]
+}

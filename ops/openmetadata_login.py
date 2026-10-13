@@ -1,13 +1,27 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import base64
 import os
 
 import httpx
 
 
 def main() -> None:
+    if os.getenv("KEST_AUTH_MODE", "oidc") == "oidc":
+        response = httpx.post(
+            "http://keycloak:8080/realms/kest/protocol/openid-connect/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": "openmetadata-ingestion",
+                "client_secret": os.environ["OPENMETADATA_INGESTION_CLIENT_SECRET"],
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+        print(response.json()["access_token"])
+        return
+    import base64
+
     email = os.getenv("OPENMETADATA_ADMIN_EMAIL", "admin@open-metadata.org")
     password = os.getenv("OPENMETADATA_ADMIN_PASSWORD", "admin")
     response = httpx.post(

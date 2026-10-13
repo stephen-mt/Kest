@@ -13,23 +13,15 @@ def airflow(*args: str, check: bool = True) -> None:
 
 def main() -> None:
     airflow("db", "migrate")
-    airflow(
-        "users",
-        "create",
-        "--username",
-        os.environ["AIRFLOW_ADMIN_USER"],
-        "--password",
-        os.environ["AIRFLOW_ADMIN_PASSWORD"],
-        "--firstname",
-        "Kest",
-        "--lastname",
-        "Admin",
-        "--role",
-        "Admin",
-        "--email",
-        "airflow@kest.local",
-        check=False,
-    )
+    if os.getenv("KEST_AUTH_MODE", "oidc") != "oidc":
+        airflow(
+            "users", "create",
+            "--username", os.environ["AIRFLOW_ADMIN_USER"],
+            "--password", os.environ["AIRFLOW_ADMIN_PASSWORD"],
+            "--firstname", "Kest", "--lastname", "Admin",
+            "--role", "Admin", "--email", "airflow@kest.local",
+            check=False,
+        )
     pools = {
         "source_ingestion": ("3", "Source API and database extraction"),
         "clickhouse_transform": ("2", "ClickHouse and dbt transformations"),

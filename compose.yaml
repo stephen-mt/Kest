@@ -40,6 +40,8 @@ x-airflow-common: &airflow-common
   depends_on:
     postgres:
       condition: service_healthy
+    keycloak:
+      condition: service_healthy
     redis:
       condition: service_healthy
     clickhouse:
@@ -86,6 +88,40 @@ services:
     networks: [control]
     restart: unless-stopped
     mem_limit: 384m
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.0@sha256:27b3230fbabb8c9ff3c66c864cf09dcd8a41aca82e5100679d109ef0eeb05741
+    command:
+      - start
+      - --http-enabled=true
+      - --hostname=http://127.0.0.1:8180
+      - --hostname-backchannel-dynamic=true
+      - --proxy-headers=xforwarded
+      - --import-realm
+    env_file: [.env]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    volumes:
+      - ./infra/identity/kest-realm.json:/opt/keycloak/data/import/kest-realm.json:ro
+    ports: ["127.0.0.1:8180:8080"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 40
+    networks: [control]
+    restart: unless-stopped
+    mem_limit: 1024m
 
   object-store:
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
@@ -283,6 +319,8 @@ services:
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
       SUPERSET_DATABASE_URI: postgresql+psycopg2://superset:${SUPERSET_DB_PASSWORD}@postgres:5432/superset
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      KEST_AUTH_MODE: ${KEST_AUTH_MODE:-oidc}
+      SUPERSET_OIDC_CLIENT_SECRET: ${SUPERSET_OIDC_CLIENT_SECRET}
     command: ["python", "/opt/kest/ops/superset_init.py"]
     volumes: ["./:/opt/kest:ro"]
     depends_on:
@@ -369,9 +407,25 @@ services:
       ELASTICSEARCH_SCHEME: http
       ELASTICSEARCH_CLUSTER_ALIAS: openmetadata
       SEARCH_TYPE: opensearch
-      AUTHENTICATION_PROVIDER: basic
       PIPELINE_SERVICE_CLIENT_ENABLED: "false"
       SERVER_HOST_API_URL: http://openmetadata-server:8585/api
+      AUTHORIZER_CLASS_NAME: org.openmetadata.service.security.DefaultAuthorizer
+      AUTHORIZER_REQUEST_FILTER: org.openmetadata.service.security.JwtFilter
+      AUTHORIZER_ADMIN_PRINCIPALS: '[platform-admin,service-account-openmetadata-ingestion]'
+      AUTHORIZER_PRINCIPAL_DOMAIN: kest.local
+      AUTHENTICATION_PROVIDER: custom-oidc
+      CUSTOM_OIDC_AUTHENTICATION_PROVIDER_NAME: Kest SSO
+      AUTHENTICATION_PUBLIC_KEYS: '[http://keycloak:8080/realms/kest/protocol/openid-connect/certs,http://openmetadata-server:8585/api/v1/system/config/jwks]'
+      AUTHENTICATION_AUTHORITY: http://127.0.0.1:8180/realms/kest
+      AUTHENTICATION_CLIENT_ID: openmetadata
+      AUTHENTICATION_CALLBACK_URL: http://127.0.0.1:8585/callback
+      AUTHENTICATION_CLIENT_TYPE: confidential
+      OIDC_CLIENT_ID: openmetadata
+      OIDC_CLIENT_SECRET: ${OPENMETADATA_OIDC_CLIENT_SECRET}
+      OIDC_TYPE: Keycloak
+      OIDC_DISCOVERY_URI: http://keycloak:8080/realms/kest/.well-known/openid-configuration
+      OIDC_CALLBACK: http://127.0.0.1:8585/callback
+      OIDC_SERVER_URL: http://127.0.0.1:8585
     command: ["./bootstrap/openmetadata-ops.sh", "migrate"]
     depends_on:
       postgres:
