@@ -1,4 +1,6 @@
 FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+ARG KEST_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$KEST_GIT_SHA
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl postgresql-client \
@@ -6,6 +8,11 @@ RUN apt-get update \
 WORKDIR /opt/kest
 COPY pyproject.toml /opt/kest/pyproject.toml
 COPY ingestion /opt/kest/ingestion
+COPY transformations /opt/kest/transformations
+COPY governance /opt/kest/governance
+COPY ops /opt/kest/ops
+COPY serving /opt/kest/serving
+COPY infra/migrations /opt/kest/infra/migrations
 RUN python -m pip install --no-cache-dir "pip==26.2.1" \
     && python -m pip install --no-cache-dir -e '.[test]' \
     && python -m venv /opt/venvs/dbt \

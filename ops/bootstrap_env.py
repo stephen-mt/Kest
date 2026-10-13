@@ -44,6 +44,70 @@ def mkdir_shared(path: Path) -> None:
         pass
 
 
+def write_object_store_policies() -> None:
+    policy_dir = RUNTIME / "object-store"
+    policy_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    chmod_if_owned(policy_dir, 0o700)
+    policies = {
+        "writer-policy.json": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetBucketLocation", "s3:GetBucketVersioning", "s3:ListBucket",
+                        "s3:ListBucketMultipartUploads",
+                    ],
+                    "Resource": ["arn:aws:s3:::raw", "arn:aws:s3:::restore-verify"],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload",
+                        "s3:ListMultipartUploadParts",
+                    ],
+                    "Resource": ["arn:aws:s3:::raw/*", "arn:aws:s3:::restore-verify/*"],
+                },
+            ],
+        },
+        "reader-policy.json": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
+                    "Resource": ["arn:aws:s3:::raw"],
+                },
+                {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": ["arn:aws:s3:::raw/*"]},
+            ],
+        },
+        "backup-policy.json": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads",
+                    ],
+                    "Resource": ["arn:aws:s3:::platform-backups"],
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject", "s3:PutObject", "s3:DeleteObject",
+                        "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts",
+                    ],
+                    "Resource": ["arn:aws:s3:::platform-backups/*"],
+                },
+            ],
+        },
+    }
+    for filename, policy in policies.items():
+        policy_file = policy_dir / filename
+        policy_file.write_text(json.dumps(policy, indent=2) + "\n")
+        policy_file.chmod(0o600)
+
+
 def main() -> None:
     RUNTIME.mkdir(mode=0o711, parents=True, exist_ok=True)
     chmod_if_owned(RUNTIME, 0o711)
@@ -125,80 +189,7 @@ def main() -> None:
         ENV_FILE.write_text("\n".join(f"{key}={value}" for key, value in sorted(values.items())) + "\n")
         ENV_FILE.chmod(0o600)
 
-    policy_dir = RUNTIME / "object-store"
-    policy_dir.mkdir(mode=0o700, exist_ok=True)
-    chmod_if_owned(policy_dir, 0o700)
-    policies = {
-        "writer-policy.json": {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": [
-                        "s3:GetBucketLocation",
-                        "s3:GetBucketVersioning",
-                        "s3:ListBucket",
-                        "s3:ListBucketMultipartUploads",
-                    ],
-                    "Resource": ["arn:aws:s3:::raw", "arn:aws:s3:::restore-verify"],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": [
-                        "s3:GetObject",
-                        "s3:PutObject",
-                        "s3:AbortMultipartUpload",
-                        "s3:ListMultipartUploadParts",
-                    ],
-                    "Resource": ["arn:aws:s3:::raw/*", "arn:aws:s3:::restore-verify/*"],
-                },
-            ],
-        },
-        "reader-policy.json": {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": ["s3:GetBucketLocation", "s3:ListBucket"],
-                    "Resource": ["arn:aws:s3:::raw"],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": ["s3:GetObject"],
-                    "Resource": ["arn:aws:s3:::raw/*"],
-                },
-            ],
-        },
-        "backup-policy.json": {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Action": [
-                        "s3:GetBucketLocation",
-                        "s3:ListBucket",
-                        "s3:ListBucketMultipartUploads",
-                    ],
-                    "Resource": ["arn:aws:s3:::platform-backups"],
-                },
-                {
-                    "Effect": "Allow",
-                    "Action": [
-                        "s3:GetObject",
-                        "s3:PutObject",
-                        "s3:DeleteObject",
-                        "s3:AbortMultipartUpload",
-                        "s3:ListMultipartUploadParts",
-                    ],
-                    "Resource": ["arn:aws:s3:::platform-backups/*"],
-                },
-            ],
-        },
-    }
-    for filename, policy in policies.items():
-        policy_file = policy_dir / filename
-        policy_file.write_text(json.dumps(policy, indent=2) + "\n")
-        policy_file.chmod(0o600)
+    write_object_store_policies()
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ COMPOSE := docker compose --env-file .env -f compose.yaml
 
 .PHONY: help bootstrap-env up demo-up seed pipeline demo de da source-new test test-unit test-integration smoke health type \
 	catalog catalog-up catalog-sync catalog-down failure-test backup restore-test down dev-init dbt-build \
-	credentials dependency-check lint config migrate rollback
+	credentials dependency-check lint config migrate rollback deploy
 
 help:
 	@awk 'BEGIN {FS = ":.*## "; printf "Kest commands:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -107,6 +107,10 @@ rollback: bootstrap-env ## Plan or execute one audited mart rollback; set DATASE
 
 down: bootstrap-env ## Stop services while retaining persistent data
 	@$(COMPOSE) --profile catalog --profile demo --profile recovery down
+
+deploy: ## Deploy immutable images; use ENV=staging or ENV=production
+	@test "$(ENV)" = "staging" -o "$(ENV)" = "production" || (echo "ENV must be staging or production" >&2; exit 2)
+	@python3 ops/deploy.py "$(ENV)"
 
 dev-init: bootstrap-env ## Create an isolated ClickHouse database; DEVELOPER is required
 	@test -n "$(DEVELOPER)" || (echo "DEVELOPER is required" >&2; exit 2)

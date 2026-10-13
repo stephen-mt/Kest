@@ -2,6 +2,8 @@ FROM apache/airflow:3.3.2-python3.12@sha256:9df9c8be4096b9cc626bd7cb1f2b8c712eef
 
 ARG AIRFLOW_VERSION=3.3.2
 ARG PYTHON_VERSION=3.12
+ARG KEST_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$KEST_GIT_SHA
 
 USER root
 RUN apt-get update \
@@ -46,3 +48,9 @@ RUN python -m venv /opt/venvs/metadata \
 
 ENV PYTHONPATH=/opt/kest:/opt/kest/ingestion:/opt/kest/orchestration
 WORKDIR /opt/kest
+COPY --chown=airflow:root ingestion /opt/kest/ingestion
+COPY --chown=airflow:root orchestration /opt/kest/orchestration
+COPY --chown=airflow:root transformations /opt/kest/transformations
+COPY --chown=airflow:root governance /opt/kest/governance
+COPY --chown=airflow:root ops /opt/kest/ops
+COPY --chown=airflow:root infra/airflow /opt/kest/infra/airflow

@@ -4,7 +4,7 @@ x-airflow-common: &airflow-common
   build:
     context: .
     dockerfile: infra/images/airflow/Dockerfile
-  image: kest-airflow:3.3.2
+  image: ${AIRFLOW_IMAGE:-kest-airflow:3.3.2}
   env_file: [.env]
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -229,7 +229,7 @@ services:
     build:
       context: .
       dockerfile: infra/images/tooling.Dockerfile
-    image: kest-tooling:0.1.0
+    image: ${TOOLING_IMAGE:-kest-tooling:0.1.0}
     profiles: [demo]
     env_file: [.env]
     command: ["uvicorn", "source_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -251,7 +251,7 @@ services:
     build:
       context: .
       dockerfile: infra/images/tooling.Dockerfile
-    image: kest-tooling:0.1.0
+    image: ${TOOLING_IMAGE:-kest-tooling:0.1.0}
     env_file: [.env]
     environment:
       PYTHONPATH: /opt/kest/ingestion
@@ -316,7 +316,7 @@ services:
     build:
       context: .
       dockerfile: infra/images/superset/Dockerfile
-    image: kest-superset:6.1.0
+    image: ${SUPERSET_IMAGE:-kest-superset:6.1.0}
     env_file: [.env]
     environment: &superset-env
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
@@ -335,7 +335,7 @@ services:
     restart: "no"
 
   superset:
-    image: kest-superset:6.1.0
+    image: ${SUPERSET_IMAGE:-kest-superset:6.1.0}
     env_file: [.env]
     environment: *superset-env
     command: ["/app/docker/entrypoints/run-server.sh"]
@@ -355,7 +355,7 @@ services:
     mem_limit: 1024m
 
   superset-worker:
-    image: kest-superset:6.1.0
+    image: ${SUPERSET_IMAGE:-kest-superset:6.1.0}
     env_file: [.env]
     environment: *superset-env
     command: ["celery", "--app=superset.tasks.celery_app:app", "worker", "--pool=prefork", "--concurrency=2"]

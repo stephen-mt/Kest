@@ -1,0 +1,70 @@
+# Production delivery overlay: code comes only from immutable images. Runtime
+# artifacts use named volumes; no service can execute a mutable host checkout.
+services:
+  source-api:
+    build: !reset null
+    volumes: !reset []
+    pull_policy: always
+
+  tooling:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - ./.runtime/object-store:/opt/kest/.runtime/object-store
+    pull_policy: always
+
+  airflow-init:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - airflow-logs:/opt/airflow/logs
+    pull_policy: always
+
+  airflow-api-server:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - airflow-logs:/opt/airflow/logs
+    pull_policy: always
+
+  airflow-scheduler:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - airflow-logs:/opt/airflow/logs
+    pull_policy: always
+
+  airflow-dag-processor:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - airflow-logs:/opt/airflow/logs
+    pull_policy: always
+
+  airflow-worker:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - airflow-logs:/opt/airflow/logs
+    pull_policy: always
+
+  airflow-triggerer:
+    build: !reset null
+    volumes: !override
+      - runtime-data:/opt/kest/.runtime
+      - airflow-logs:/opt/airflow/logs
+    pull_policy: always
+
+  superset-init:
+    build: !reset null
+    volumes: !reset []
+    pull_policy: always
+
+  superset:
+    pull_policy: always
+
+  superset-worker:
+    pull_policy: always
+
+volumes:
+  runtime-data:
