@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import urllib.request
 from datetime import timedelta
 
@@ -27,6 +28,25 @@ def failure_callback(context: dict) -> None:
             f"task={context['task_instance'].task_id} run={context['run_id']}"
         )
     }
+    try:
+        subprocess.run(
+            [
+                INGESTION_PYTHON,
+                "-m",
+                "kest_ingestion.cli",
+                "fail-run",
+                "--dag-id",
+                context["dag"].dag_id,
+                "--orchestrator-run-id",
+                context["run_id"],
+                "--error",
+                str(context.get("exception") or "Airflow task failed"),
+            ],
+            check=False,
+            timeout=20,
+        )
+    except Exception:
+        logging.exception("Failed to update Kest run ledger")
     webhook = os.getenv("PLATFORM_ALERT_WEBHOOK_URL")
     if not webhook:
         logging.error("PLATFORM_ALERT_WEBHOOK_URL is not configured; alert=%s", message["text"])
@@ -56,31 +76,42 @@ def task_options(pool: str, timeout_minutes: int = 30) -> dict:
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)
 def ingest_sources_task() -> None:
     from kest_ingestion.config import Settings, require_secrets
-    from kest_ingestion.workflows import ingest_sources
+    from kest_ingestion.workflows import attach_batches, ingest_sources, run_step, start_run
 
     settings = Settings()
     require_secrets(settings)
-    print({"batch_ids": ingest_sources(settings)})
+    run_id = start_run(settings)
+    with run_step(settings, run_id, "ingest"):
+        batch_ids = ingest_sources(settings)
+        attach_batches(settings, run_id, batch_ids)
+    print({"run_id": run_id, "batch_ids": batch_ids})
 
 
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)
 def load_raw_task() -> None:
     from kest_ingestion.config import Settings, require_secrets
-    from kest_ingestion.workflows import load_raw
+    from kest_ingestion.workflows import load_raw, run_step, start_run
 
     settings = Settings()
     require_secrets(settings)
-    print({"loaded_batch_ids": load_raw(settings)})
+    run_id = start_run(settings)
+    with run_step(settings, run_id, "load"):
+        loaded = load_raw(settings)
+    print({"run_id": run_id, "loaded_batch_ids": loaded})
 
 
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)
 def reconcile_sources_task() -> None:
     from kest_ingestion.config import Settings, require_secrets
-    from kest_ingestion.workflows import reconcile_sources
+    from kest_ingestion.workflows import attach_batches, reconcile_sources, run_step, start_run
 
     settings = Settings()
     require_secrets(settings)
-    print({"tombstone_batch_id": reconcile_sources(settings)})
+    run_id = start_run(settings)
+    with run_step(settings, run_id, "reconcile"):
+        batch_id = reconcile_sources(settings)
+        attach_batches(settings, run_id, [batch_id] if batch_id else [])
+    print({"run_id": run_id, "tombstone_batch_id": batch_id})
 
 
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)
@@ -96,11 +127,15 @@ def publish_gold_task() -> None:
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)
 def business_smoke_task() -> None:
     from kest_ingestion.config import Settings, require_secrets
-    from kest_ingestion.workflows import smoke
+    from kest_ingestion.workflows import finish_run, run_step, smoke, start_run
 
     settings = Settings()
     require_secrets(settings)
-    print(smoke(settings))
+    run_id = start_run(settings)
+    with run_step(settings, run_id, "business_smoke"):
+        result = smoke(settings)
+    finish_run(settings, run_id, "SUCCESS")
+    print({"run_id": run_id, **result})
 
 
 @task.external_python(python=INGESTION_PYTHON, expect_airflow=False, do_xcom_push=False)

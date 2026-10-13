@@ -40,6 +40,10 @@ def main() -> None:
     commands.add_parser("late-refund")
     commands.add_parser("reconcile")
     commands.add_parser("validate-config")
+    failed = commands.add_parser("fail-run")
+    failed.add_argument("--dag-id", required=True)
+    failed.add_argument("--orchestrator-run-id", required=True)
+    failed.add_argument("--error", required=True)
     dev = commands.add_parser("dev-init")
     dev.add_argument("--developer", required=True)
     args = parser.parse_args()
@@ -79,6 +83,10 @@ def main() -> None:
     elif args.command == "validate-config":
         validate_configs(settings)
         print("source configuration: valid")
+    elif args.command == "fail-run":
+        from kest_ingestion.workflows import fail_orchestrated_run
+
+        fail_orchestrated_run(settings, args.dag_id, args.orchestrator_run_id, args.error)
 
 
 if __name__ == "__main__":

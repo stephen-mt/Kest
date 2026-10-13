@@ -8,11 +8,13 @@ operator CLI and by tests.
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import subprocess
 import sys
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -47,10 +49,59 @@ def run_dbt_build(target: str = "production", env: dict[str, str] | None = None)
     )
 
 
-def start_run(settings: Settings) -> str:
-    run_id = str(uuid.uuid4())
+def _run_identity() -> tuple[str, str | None, str | None]:
+    dag_id = os.getenv("AIRFLOW_CTX_DAG_ID")
+    orchestrator_run_id = os.getenv("AIRFLOW_CTX_DAG_RUN_ID")
+    if dag_id and orchestrator_run_id:
+        run_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"kest:{os.getenv('KEST_ENVIRONMENT', 'local')}:{dag_id}:{orchestrator_run_id}",
+            )
+        )
+        return run_id, "airflow", f"{dag_id}:{orchestrator_run_id}"
+    return str(uuid.uuid4()), None, None
+
+
+def start_run(
+    settings: Settings,
+    *,
+    run_type: str = "PIPELINE",
+    requested_by: str | None = None,
+    reason: str | None = None,
+    source: str | None = None,
+    window_start: str | None = None,
+    window_end: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> str:
+    run_id, orchestrator, orchestrator_run_id = _run_identity()
     with control_connection(settings) as conn, conn.cursor() as cur:
-        cur.execute("INSERT INTO pipeline_run(run_id, status) VALUES (%s, 'RUNNING')", (run_id,))
+        cur.execute(
+            """
+            INSERT INTO pipeline_run(
+              run_id, status, run_type, environment, git_sha, image_ref,
+              orchestrator, orchestrator_run_id, requested_by, reason, source,
+              window_start, window_end, metadata
+            ) VALUES (%s,'RUNNING',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (run_id) DO UPDATE
+              SET status='RUNNING', finished_at=NULL, error=NULL
+            """,
+            (
+                run_id,
+                run_type,
+                os.getenv("KEST_ENVIRONMENT", "local"),
+                os.getenv("KEST_GIT_SHA"),
+                os.getenv("KEST_IMAGE_REF"),
+                orchestrator,
+                orchestrator_run_id,
+                requested_by or os.getenv("KEST_REQUESTED_BY", "system"),
+                reason,
+                source,
+                window_start,
+                window_end,
+                json.dumps(metadata or {}),
+            ),
+        )
     return run_id
 
 
@@ -59,6 +110,62 @@ def finish_run(settings: Settings, run_id: str, status: str, error: str | None =
         cur.execute(
             "UPDATE pipeline_run SET status=%s, error=%s, finished_at=now() WHERE run_id=%s",
             (status, error, run_id),
+        )
+
+
+@contextmanager
+def run_step(settings: Settings, run_id: str, step: str):
+    with control_connection(settings) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT coalesce(max(attempt), 0) + 1 FROM pipeline_run_step WHERE run_id=%s AND step=%s",
+            (run_id, step),
+        )
+        attempt = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO pipeline_run_step(run_id,step,status,attempt) VALUES (%s,%s,'RUNNING',%s)",
+            (run_id, step, attempt),
+        )
+    try:
+        yield
+    except Exception as error:
+        with control_connection(settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE pipeline_run_step SET status='FAILED', error=%s, finished_at=now() "
+                "WHERE run_id=%s AND step=%s AND attempt=%s",
+                (str(error)[:4000], run_id, step, attempt),
+            )
+        finish_run(settings, run_id, "FAILED", str(error)[:4000])
+        raise
+    else:
+        with control_connection(settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE pipeline_run_step SET status='SUCCESS', finished_at=now() "
+                "WHERE run_id=%s AND step=%s AND attempt=%s",
+                (run_id, step, attempt),
+            )
+
+
+def attach_batches(settings: Settings, run_id: str, batch_ids: list[str]) -> None:
+    if not batch_ids:
+        return
+    with control_connection(settings) as conn, conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO pipeline_run_batch(run_id,batch_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            [(run_id, batch_id) for batch_id in batch_ids],
+        )
+
+
+def fail_orchestrated_run(settings: Settings, dag_id: str, orchestrator_run_id: str, error: str) -> None:
+    run_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"kest:{os.getenv('KEST_ENVIRONMENT', 'local')}:{dag_id}:{orchestrator_run_id}",
+        )
+    )
+    with control_connection(settings) as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE pipeline_run SET status='FAILED', error=%s, finished_at=now() WHERE run_id=%s",
+            (error[:4000], run_id),
         )
 
 
@@ -79,9 +186,10 @@ def reconcile_sources(settings: Settings) -> str | None:
 
 
 def publish_gold(settings: Settings) -> dict[str, str]:
-    run_id = start_run(settings)
+    run_id = start_run(settings, run_type="PUBLISH")
     try:
-        publications = publish_all(settings, run_id)
+        with run_step(settings, run_id, "publish"):
+            publications = publish_all(settings, run_id)
         finish_run(settings, run_id, "SUCCESS")
         return publications
     except Exception as error:
@@ -92,10 +200,15 @@ def publish_gold(settings: Settings) -> dict[str, str]:
 def run_pipeline(settings: Settings) -> dict[str, object]:
     run_id = start_run(settings)
     try:
-        batches = ingest_sources(settings)
-        loaded = load_raw(settings)
-        run_dbt_build()
-        publications = publish_all(settings, run_id)
+        with run_step(settings, run_id, "ingest"):
+            batches = ingest_sources(settings)
+            attach_batches(settings, run_id, batches)
+        with run_step(settings, run_id, "load"):
+            loaded = load_raw(settings)
+        with run_step(settings, run_id, "transform"):
+            run_dbt_build()
+        with run_step(settings, run_id, "publish"):
+            publications = publish_all(settings, run_id)
         finish_run(settings, run_id, "SUCCESS")
         return {
             "run_id": run_id,
@@ -116,19 +229,47 @@ def run_backfill(
     reason: str,
 ) -> dict[str, object]:
     plan = validate_backfill(source, start_value, end_value, reason)
-    run_id = start_run(settings)
-    try:
-        batches = ingest_backfill(
-            settings,
-            source,
-            date.fromisoformat(start_value),
-            date.fromisoformat(end_value),
+    run_id = start_run(
+        settings,
+        run_type="BACKFILL",
+        reason=reason,
+        source=source,
+        window_start=start_value,
+        window_end=end_value,
+    )
+    request_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"kest:backfill:{run_id}"))
+    with control_connection(settings) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO backfill_request(
+              request_id,run_id,source,window_start,window_end,reason,requested_by,status
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,'RUNNING')
+            ON CONFLICT (request_id) DO UPDATE SET status='RUNNING', error=NULL, finished_at=NULL
+            """,
+            (request_id, run_id, source, start_value, end_value, reason, os.getenv("KEST_REQUESTED_BY", "system")),
         )
+    try:
+        with run_step(settings, run_id, "backfill_extract"):
+            batches = ingest_backfill(
+                settings,
+                source,
+                date.fromisoformat(start_value),
+                date.fromisoformat(end_value),
+            )
         batch_ids = [batch.batch_id for batch in batches]
-        loaded = load_pending(settings, batch_ids)
-        run_dbt_build()
-        publications = publish_all(settings, run_id)
+        attach_batches(settings, run_id, batch_ids)
+        with run_step(settings, run_id, "backfill_load"):
+            loaded = load_pending(settings, batch_ids)
+        with run_step(settings, run_id, "transform"):
+            run_dbt_build()
+        with run_step(settings, run_id, "publish"):
+            publications = publish_all(settings, run_id)
         finish_run(settings, run_id, "SUCCESS")
+        with control_connection(settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE backfill_request SET status='SUCCESS', finished_at=now() WHERE request_id=%s",
+                (request_id,),
+            )
         return {
             "run_id": run_id,
             "backfill": plan,
@@ -138,6 +279,11 @@ def run_backfill(
         }
     except Exception as error:
         finish_run(settings, run_id, "FAILED", str(error)[:4000])
+        with control_connection(settings) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE backfill_request SET status='FAILED', error=%s, finished_at=now() WHERE request_id=%s",
+                (str(error)[:4000], request_id),
+            )
         raise
 
 

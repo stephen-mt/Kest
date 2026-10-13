@@ -33,6 +33,9 @@ x-airflow-common: &airflow-common
     DBT_TARGET_PATH: /opt/kest/.runtime/dbt/target
     DBT_LOG_PATH: /opt/kest/.runtime/dbt/logs
     PYTHON_DOTENV_DISABLED: "1"
+    KEST_ENVIRONMENT: ${KEST_ENVIRONMENT:-local}
+    KEST_GIT_SHA: ${KEST_GIT_SHA:-workspace}
+    KEST_IMAGE_REF: ${KEST_IMAGE_REF:-workspace}
   volumes:
     - ./:/opt/kest:ro
     - ./.runtime:/opt/kest/.runtime
