@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 import clickhouse_connect
@@ -28,6 +29,47 @@ def render(payload: str) -> str:
         return os.environ[name].replace("'", "''")
 
     return re.sub(r"\{\{([A-Z][A-Z0-9_]*)\}\}", replace, payload)
+
+
+def iter_sql_statements(payload: str) -> Iterator[str]:
+    """Yield semicolon-delimited SQL while ignoring line comments and quoted text."""
+    statement: list[str] = []
+    quote: str | None = None
+    index = 0
+
+    while index < len(payload):
+        char = payload[index]
+        following = payload[index + 1] if index + 1 < len(payload) else ""
+
+        if quote:
+            statement.append(char)
+            if char == quote:
+                if following == quote:
+                    statement.append(following)
+                    index += 1
+                else:
+                    quote = None
+        elif char in {"'", '"', "`"}:
+            quote = char
+            statement.append(char)
+        elif char == "-" and following == "-":
+            index = payload.find("\n", index + 2)
+            if index == -1:
+                break
+            statement.append("\n")
+        elif char == ";":
+            rendered = "".join(statement).strip()
+            if rendered:
+                yield rendered
+            statement = []
+        else:
+            statement.append(char)
+
+        index += 1
+
+    rendered = "".join(statement).strip()
+    if rendered:
+        yield rendered
 
 
 def ensure_postgres_databases() -> None:
@@ -135,15 +177,8 @@ def migrate_clickhouse() -> None:
             if rows[0][0] != digest:
                 raise RuntimeError(f"Applied ClickHouse migration changed: {version}")
             continue
-        for statement in (item.strip() for item in payload.split(";")):
-            if statement and not statement.startswith("--"):
-                client.command(statement)
-            elif statement and "\n" in statement:
-                body = "\n".join(
-                    line for line in statement.splitlines() if not line.lstrip().startswith("--")
-                ).strip()
-                if body:
-                    client.command(body)
+        for statement in iter_sql_statements(payload):
+            client.command(statement)
         client.insert(
             "platform.schema_migration",
             [[version, digest]],

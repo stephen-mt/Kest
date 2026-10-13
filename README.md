@@ -41,6 +41,11 @@ UIs.
    an exchange is still required. Publication state, release identity and
    rollback history are durable control-plane records.
 
+The three empty Gold serving contracts are created during migration, so
+Superset can bootstrap datasets and dashboards before the first publication.
+They contain no demo rows; the first successful publish atomically replaces
+each contract table with its validated candidate.
+
 ### Control plane
 
 - Apache Airflow runs ingestion, transformation, publishing, bounded backfills
