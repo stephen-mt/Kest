@@ -5,7 +5,7 @@ COMPOSE := docker compose --env-file .env -f compose.yaml
 
 .PHONY: help bootstrap-env up demo-up seed pipeline demo de da source-new test test-unit test-integration smoke health type \
 	catalog catalog-up catalog-sync catalog-down failure-test backup restore-test down dev-init dbt-build \
-	credentials dependency-check lint config
+	credentials dependency-check lint config migrate
 
 help:
 	@awk 'BEGIN {FS = ":.*## "; printf "Kest commands:\n"} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -21,7 +21,8 @@ up: bootstrap-env ## Build and start the core platform
 	@$(COMPOSE) run --rm --no-deps --user root tooling python ops/prepare_runtime.py
 	@$(COMPOSE) up -d --no-build --wait postgres redis object-store clickhouse
 	@$(COMPOSE) run --rm --no-deps object-store-init
-	@python3 -m ops.clickhouse_bootstrap
+	@$(COMPOSE) run --rm --no-deps tooling python -m ops.migrate
+	@$(COMPOSE) up -d --wait keycloak
 	@$(COMPOSE) run --rm --no-deps airflow-init
 	@$(COMPOSE) run --rm --no-deps superset-init
 	@$(COMPOSE) up -d --no-build --wait airflow-api-server airflow-scheduler airflow-dag-processor airflow-worker airflow-triggerer superset superset-worker
@@ -117,6 +118,9 @@ credentials: bootstrap-env ## Show local UI endpoints and generated usernames/pa
 dependency-check: bootstrap-env ## Check pinned Python dependencies and container configuration
 	@$(COMPOSE) run --rm tooling pip check
 	@$(COMPOSE) config --quiet
+
+migrate: bootstrap-env ## Apply checksum-protected control-plane schema migrations
+	@$(COMPOSE) run --rm --no-deps tooling python -m ops.migrate
 
 lint: bootstrap-env ## Run Python linting and static configuration checks
 	@$(COMPOSE) run --rm tooling ruff check ingestion orchestration tests ops serving
